@@ -1,0 +1,2238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Glass-Top Dice Box</title>
+    <!-- Installable web app (PWA) -->
+    <link rel="manifest" href="manifest.webmanifest">
+    <meta name="theme-color" content="#090a0f">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Dice Box">
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@700&display=swap" rel="stylesheet">
+    <!-- FontAwesome for crisp icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        * {
+            user-select: none;
+            -webkit-user-select: none;
+            -webkit-touch-callout: none;
+        }
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #090a0f;
+            font-family: 'Inter', sans-serif;
+            touch-action: none;
+        }
+        #canvas-container {
+            position: absolute;
+             inset: 0;
+            width: 100%;
+            height: 100%;
+            z-index: 1;
+        }
+        /* Glass reflection & inner bevel overlay to simulate looking through a glass lid */
+        .glass-lid-overlay {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 10;
+            background: 
+                linear-gradient(var(--glass-angle, 135deg), rgba(255,255,255,0.09) 0%, rgba(255,255,255,0.01) 35%, rgba(255,255,255,0) 50%, rgba(255,255,255,0.04) 100%),
+                radial-gradient(circle at var(--glare-x, 50%) var(--glare-y, 50%), rgba(255,255,255,0.08) 0%, transparent 55%, rgba(0, 0, 0, 0.78) 100%);
+            box-shadow: inset 0 0 25px rgba(255, 255, 255, 0.08), inset 0 0 3px rgba(255, 255, 255, 0.25);
+            transition: background 0.05s linear;
+        }
+        /* Wooden outer bezel edge hint */
+        .wood-frame-border {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 11;
+            border: 6px solid #2b1709;
+            box-shadow: inset 0 0 12px rgba(0,0,0,0.9);
+        }
+        /* HUD Layer */
+        .hud-layer {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 20;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 1rem;
+        }
+        .interactive-ui {
+            pointer-events: auto;
+        }
+        .mono-num {
+            font-family: 'JetBrains Mono', monospace;
+        }
+        /* Die badge animations */
+        .die-chip {
+            transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        .die-chip.locked {
+            background: rgba(220, 38, 38, 0.28) !important;
+            border-color: #ef4444 !important;
+            color: #fecaca !important;
+            box-shadow: 0 0 12px rgba(239, 68, 68, 0.5);
+        }
+        /* Custom scrollbar for dice readout bar */
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+        /* Swipe visualizer canvas */
+        #swipe-canvas {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 15;
+        }
+        /* Popup modal transition */
+        .popup-panel {
+            transition: opacity 0.18s ease, transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+        }
+        .popup-panel.hidden-popup {
+            opacity: 0;
+            transform: translateY(-8px) scale(0.96);
+            pointer-events: none;
+        }
+    </style>
+
+    <!-- Import Map for Three.js and Cannon-es -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <!-- 3D WebGL Container -->
+    <div id="canvas-container"></div>
+
+    <!-- 2D Swipe Trail Feedback -->
+    <canvas id="swipe-canvas"></canvas>
+
+    <!-- Glass Screen & Box Frame Overlays -->
+    <div id="glass-overlay" class="glass-lid-overlay"></div>
+    <div class="wood-frame-border"></div>
+
+    <!-- Minimal Unobtrusive HUD Layer -->
+    <div class="hud-layer">
+        
+        <!-- Sleek Top Compact Bar -->
+        <div class="flex flex-col items-center w-full relative">
+            <div class="interactive-ui bg-slate-950/80 backdrop-blur-md border border-white/15 rounded-2xl px-2.5 py-1.5 shadow-2xl flex items-center gap-2 max-w-full">
+                
+                <!-- Individual Dice Readout Pills (Tap to Lock/Unlock) -->
+                <div id="dice-readout-list" class="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-[46vw] sm:max-w-[60vw] py-0.5 px-0.5">
+                    <!-- Populated dynamically -->
+                </div>
+
+                <div class="h-6 w-[1px] bg-white/15 shrink-0"></div>
+
+                <!-- Total Score -->
+                <div class="flex flex-col items-end justify-center px-1 shrink-0">
+                    <span id="dice-count-label" class="text-[8px] uppercase tracking-wider text-slate-400 font-semibold leading-none">5 Dice</span>
+                    <div class="flex items-baseline gap-1 mt-0.5">
+                        <span class="text-[9px] uppercase tracking-wider text-slate-400 font-bold">Sum</span>
+                        <span id="total-sum-badge" class="mono-num text-base sm:text-lg font-extrabold text-amber-400 leading-none">15</span>
+                    </div>
+                </div>
+
+                <div class="h-6 w-[1px] bg-white/15 shrink-0"></div>
+
+                <!-- Popup Trigger Buttons -->
+                <div class="flex items-center gap-1 shrink-0">
+                    <!-- Dice Bag Popup Trigger -->
+                    <button id="open-dice-menu-btn" title="Add / Remove Polyhedral Dice" class="bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-amber-300 px-2.5 py-1.5 rounded-xl border border-white/10 flex items-center gap-1.5 text-xs font-bold transition">
+                        <i class="fa-solid fa-dice-d20"></i>
+                        <span class="hidden sm:inline">Dice</span>
+                    </button>
+
+                    <!-- Tilt / Motion / Settings Popup Trigger -->
+                    <button id="open-tilt-menu-btn" title="3D Tilt, Sensors & Controls" class="bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 px-2.5 py-1.5 rounded-xl border border-white/10 flex items-center gap-1.5 text-xs font-semibold transition relative">
+                        <span id="top-sensor-dot" class="w-2 h-2 rounded-full bg-amber-400"></span>
+                        <i class="fa-solid fa-compass"></i>
+                        <span class="hidden sm:inline">Tilt</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- POPUP 1: Polyhedral Dice Manager Modal -->
+            <div id="dice-menu-popup" class="popup-panel hidden-popup interactive-ui absolute top-14 bg-slate-950/95 backdrop-blur-xl border border-white/20 rounded-2xl p-3.5 shadow-2xl w-[92vw] max-w-sm z-30">
+                <div class="flex items-center justify-between pb-2 mb-2.5 border-b border-white/10">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-dice-d20 text-amber-400"></i>
+                        <span class="text-xs font-extrabold uppercase tracking-wider text-white">Dice Tray Manager</span>
+                    </div>
+                    <button id="close-dice-menu-btn" class="text-slate-400 hover:text-white w-6 h-6 rounded-lg flex items-center justify-center">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+
+                <!-- Polyhedral Add / Remove Rows -->
+                <div id="poly-spawner-group" class="grid grid-cols-1 gap-1.5 mb-3">
+                    <!-- Dynamically populated D4, D6, D8, D12, D20 rows -->
+                </div>
+
+                <!-- Quick Presets Row -->
+                <div class="flex items-center justify-between gap-1.5 pt-2 border-t border-white/10">
+                    <button id="preset-5d6-btn" class="flex-1 bg-slate-800 hover:bg-slate-700 active:scale-95 text-amber-300 text-xs font-bold py-2 rounded-xl border border-amber-400/20 transition">
+                        5x D6
+                    </button>
+                    <button id="preset-rpg-btn" class="flex-1 bg-slate-800 hover:bg-slate-700 active:scale-95 text-sky-300 text-xs font-bold py-2 rounded-xl border border-sky-400/20 transition">
+                        RPG Set (All 5)
+                    </button>
+                    <button id="clear-unlocked-btn" class="bg-red-950/60 hover:bg-red-900/80 active:scale-95 text-red-200 text-xs font-semibold px-3 py-2 rounded-xl border border-red-500/30 transition" title="Remove Unlocked Dice">
+                        <i class="fa-solid fa-trash-can mr-1"></i>Clear
+                    </button>
+                </div>
+            </div>
+
+            <!-- POPUP 2: Tilt, Motion Calibration & Settings Modal -->
+            <div id="tilt-menu-popup" class="popup-panel hidden-popup interactive-ui absolute top-14 bg-slate-950/95 backdrop-blur-xl border border-white/20 rounded-2xl p-3.5 shadow-2xl w-[92vw] max-w-sm z-30">
+                <div class="flex items-center justify-between pb-2 mb-2.5 border-b border-white/10">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-compass text-emerald-400"></i>
+                        <span class="text-xs font-extrabold uppercase tracking-wider text-white">3D Gravity & Motion</span>
+                    </div>
+                    <button id="close-tilt-menu-btn" class="text-slate-400 hover:text-white w-6 h-6 rounded-lg flex items-center justify-center">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+
+                <!-- Enable / Calibrate Phone Motion Button -->
+                <div class="mb-3">
+                    <button id="motion-btn" class="w-full bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-bold py-2.5 px-3 rounded-xl shadow-lg border border-indigo-400/40 flex items-center justify-center gap-2 transition">
+                        <i class="fa-solid fa-mobile-screen-button"></i>
+                        <span id="motion-btn-text">Enable / Calibrate Phone Tilt</span>
+                    </button>
+                    <p id="sensor-diag-msg" class="text-[10px] text-slate-400 mt-1.5 leading-snug text-center">
+                        Tilt your phone to roll dice with gravity, or drag the 3D tilt pad below.
+                    </p>
+                </div>
+
+                <!-- Interactive 3D Gravity & Tilt Pad -->
+                <div class="bg-slate-900/90 border border-white/10 rounded-xl p-2.5 flex items-center justify-between gap-3 mb-3">
+                    <div id="tilt-pad" class="relative w-16 h-16 rounded-full bg-slate-950 border border-white/20 shadow-inner flex items-center justify-center cursor-pointer touch-none shrink-0" title="Drag to tilt box in 3D">
+                        <div class="absolute inset-2 rounded-full border border-dashed border-white/15 pointer-events-none"></div>
+                        <div class="w-1 h-1 rounded-full bg-white/30 pointer-events-none"></div>
+                        <div id="tilt-dot" class="w-4 h-4 rounded-full bg-amber-400 shadow-[0_0_10px_#fbbf24] pointer-events-none transition-transform duration-75"></div>
+                    </div>
+
+                    <div class="flex flex-col flex-1 text-xs">
+                        <div class="flex items-center gap-1.5 font-bold text-slate-200">
+                            <span id="sensor-led" class="w-2 h-2 rounded-full bg-amber-400"></span>
+                            <span id="sensor-status-label">WAITING FOR TILT</span>
+                        </div>
+                        <span id="gravity-readout" class="mono-num text-[11px] text-slate-400 mt-0.5">GX: 0.0  GZ: 0.0  GY: -1.0</span>
+                        <div class="flex items-center gap-1.5 mt-2">
+                            <button id="calibrate-zero-btn" class="flex-1 bg-slate-800 hover:bg-slate-700 text-emerald-300 py-1 px-2 rounded-lg border border-emerald-500/20 text-[10px] font-bold transition" title="Set current phone angle as flat center">
+                                Zero Angle
+                            </button>
+                            <button id="flip-z-btn" class="bg-slate-800 hover:bg-slate-700 text-slate-200 py-1 px-2 rounded-lg border border-white/10 text-[10px] font-semibold transition" title="Invert vertical gravity (against glass)">
+                                Flip Z
+                            </button>
+                            <button id="reset-tilt-btn" class="bg-slate-800 hover:bg-slate-700 text-slate-300 py-1 px-2 rounded-lg border border-white/10 text-[10px] font-semibold transition">
+                                Flat
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Extra Box Actions (Unlock All & Audio) -->
+                <div class="flex items-center justify-between gap-2 pt-2 border-t border-white/10">
+                    <button id="unlock-btn" class="flex-1 bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 font-semibold py-2 px-3 rounded-xl border border-white/10 flex items-center justify-center gap-1.5 text-xs transition disabled:opacity-40 disabled:pointer-events-none">
+                        <i class="fa-solid fa-lock-open text-red-400"></i>
+                        <span>Unlock All Dice</span>
+                    </button>
+
+                    <button id="sound-btn" class="bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 py-2 px-3 rounded-xl border border-white/10 flex items-center gap-1.5 text-xs font-semibold transition">
+                        <i id="sound-icon" class="fa-solid fa-volume-high text-emerald-400"></i>
+                        <span>Sound</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Bottom Minimal Corner Controls (Leaves 95% of Glass Box Unobstructed) -->
+        <div class="flex items-end justify-between w-full pointer-events-none">
+            <!-- Tiny subtle hint pill on bottom-left (fades out after first roll) -->
+            <div id="status-banner" class="bg-black/50 backdrop-blur-sm border border-white/10 rounded-full px-2.5 py-1 text-[10px] text-slate-300/90 flex items-center gap-1.5 shadow transition-opacity duration-500">
+                <i class="fa-solid fa-hand-pointer text-amber-400"></i>
+                <span>Swipe glass to roll • Tap die to lock</span>
+            </div>
+
+            <!-- Compact Floating Roll Action Button on bottom-right -->
+            <button id="roll-btn" class="interactive-ui bg-gradient-to-b from-amber-400 to-amber-600 hover:from-amber-300 hover:to-amber-500 active:scale-90 text-slate-950 font-extrabold px-4 py-2.5 rounded-2xl shadow-2xl border border-amber-200/40 flex items-center gap-2 text-xs sm:text-sm transition">
+                <i class="fa-solid fa-dice text-base"></i>
+                <span>Roll</span>
+            </button>
+        </div>
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import * as CANNON from 'cannon-es';
+
+        /**************************************************************
+         * 1. SOUND SYNTHESIZER (Web Audio API - Zero External URLs)
+         **************************************************************/
+        class DiceSoundFX {
+            constructor() {
+                this.ctx = null;
+                this.enabled = true;
+                this.lastHitTime = 0;
+            }
+
+            init() {
+                if (!this.ctx) {
+                    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                    if (AudioCtx) this.ctx = new AudioCtx();
+                }
+                if (this.ctx && this.ctx.state === 'suspended') {
+                    this.ctx.resume();
+                }
+            }
+
+            playCollide(impactVelocity, type = 'wood') {
+                if (!this.enabled || !this.ctx) return;
+                const now = performance.now();
+                if (now - this.lastHitTime < 20) return;
+                this.lastHitTime = now;
+
+                const gainVal = Math.min(1, Math.max(0.02, (impactVelocity - 1.1) / 18));
+                if (gainVal <= 0.02) return;
+
+                const t = this.ctx.currentTime;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+
+                if (type === 'die') {
+                    osc.type = 'triangle';
+                    osc.frequency.setValueAtTime(520 + Math.random() * 220, t);
+                    osc.frequency.exponentialRampToValueAtTime(140, t + 0.045);
+                } else if (type === 'glass') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(980 + Math.random() * 200, t);
+                    osc.frequency.exponentialRampToValueAtTime(320, t + 0.035);
+                } else {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(190 + Math.random() * 60, t);
+                    osc.frequency.exponentialRampToValueAtTime(55, t + 0.06);
+                }
+
+                gain.gain.setValueAtTime(gainVal * 0.34, t);
+                gain.gain.exponentialRampToValueAtTime(0.001, t + 0.06);
+
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(t);
+                osc.stop(t + 0.065);
+            }
+
+            playLockToggle(isLocked) {
+                if (!this.enabled) return;
+                this.init();
+                if (!this.ctx) return;
+
+                const t = this.ctx.currentTime;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+
+                osc.type = 'sine';
+                if (isLocked) {
+                    osc.frequency.setValueAtTime(440, t);
+                    osc.frequency.exponentialRampToValueAtTime(880, t + 0.09);
+                } else {
+                    osc.frequency.setValueAtTime(700, t);
+                    osc.frequency.exponentialRampToValueAtTime(360, t + 0.09);
+                }
+
+                gain.gain.setValueAtTime(0.18, t);
+                gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(t);
+                osc.stop(t + 0.11);
+            }
+
+            playSpawn(isAdd = true) {
+                if (!this.enabled) return;
+                this.init();
+                if (!this.ctx) return;
+                const t = this.ctx.currentTime;
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = 'triangle';
+                osc.frequency.setValueAtTime(isAdd ? 320 : 480, t);
+                osc.frequency.exponentialRampToValueAtTime(isAdd ? 640 : 220, t + 0.07);
+                gain.gain.setValueAtTime(0.15, t);
+                gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
+                osc.connect(gain);
+                gain.connect(this.ctx.destination);
+                osc.start(t);
+                osc.stop(t + 0.085);
+            }
+        }
+
+        const soundFX = new DiceSoundFX();
+
+        /**************************************************************
+         * 2. PROCEDURAL TEXTURES (Felt Floor, Wood Walls, & Glow Sprite)
+         **************************************************************/
+        function createFeltTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+
+            ctx.fillStyle = '#13241d';
+            ctx.fillRect(0, 0, 512, 512);
+
+            for (let i = 0; i < 45000; i++) {
+                const x = Math.random() * 512;
+                const y = Math.random() * 512;
+                ctx.fillStyle = Math.random() > 0.5 ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.08)';
+                ctx.fillRect(x, y, 2, 2);
+            }
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            tex.repeat.set(3, 3);
+            return tex;
+        }
+
+        function createWoodTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 512;
+            canvas.height = 512;
+            const ctx = canvas.getContext('2d');
+
+            ctx.fillStyle = '#3b1e0e';
+            ctx.fillRect(0, 0, 512, 512);
+
+            for (let i = 0; i < 400; i++) {
+                ctx.fillStyle = i % 2 === 0 ? 'rgba(20, 8, 2, 0.14)' : 'rgba(95, 50, 22, 0.1)';
+                const y = Math.random() * 512;
+                const h = 1 + Math.random() * 6;
+                ctx.fillRect(0, y, 512, h);
+            }
+
+            const tex = new THREE.CanvasTexture(canvas);
+            tex.wrapS = THREE.RepeatWrapping;
+            tex.wrapT = THREE.RepeatWrapping;
+            return tex;
+        }
+
+        function createRedGlowSpriteTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 128;
+            canvas.height = 128;
+            const ctx = canvas.getContext('2d');
+            const grad = ctx.createRadialGradient(64, 64, 8, 64, 64, 60);
+            grad.addColorStop(0, 'rgba(255, 60, 60, 0.95)');
+            grad.addColorStop(0.45, 'rgba(239, 68, 68, 0.45)');
+            grad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, 128, 128);
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        const redGlowTexture = createRedGlowSpriteTexture();
+
+        /**************************************************************
+         * 3. POLYHEDRAL DICE DEFINITIONS & GEOMETRY/PHYSICS BUILDERS
+         *    Supports D4, D6, D8, D12, D20
+         **************************************************************/
+        const DICE_TYPES = {
+            D4: {
+                id: 'D4',
+                sides: 4,
+                radius: 1.22,
+                mass: 1.0,
+                badgeClass: 'text-emerald-300 border-emerald-500/30',
+                btnColor: 'from-emerald-500 to-teal-700',
+                palette: { c0: '#ecfdf5', c1: '#a7f3d0', c2: '#059669', border: '#047857', text: '#064e3b' }
+            },
+            D6: {
+                id: 'D6',
+                sides: 6,
+                size: 1.46,
+                radius: 1.26,
+                mass: 1.2,
+                badgeClass: 'text-amber-200 border-amber-400/30',
+                btnColor: 'from-slate-100 to-slate-300 text-slate-900',
+                palette: { c0: '#ffffff', c1: '#f1f5f9', c2: '#cbd5e1', border: '#94a3b8', text: '#0f172a' }
+            },
+            D8: {
+                id: 'D8',
+                sides: 8,
+                radius: 1.18,
+                mass: 1.25,
+                badgeClass: 'text-sky-300 border-sky-500/30',
+                btnColor: 'from-sky-400 to-blue-600',
+                palette: { c0: '#f0f9ff', c1: '#bae6fd', c2: '#0284c7', border: '#0369a1', text: '#0c4a6e' }
+            },
+            D12: {
+                id: 'D12',
+                sides: 12,
+                radius: 1.18,
+                mass: 1.4,
+                badgeClass: 'text-purple-300 border-purple-500/30',
+                btnColor: 'from-purple-500 to-indigo-700',
+                palette: { c0: '#faf5ff', c1: '#e9d5ff', c2: '#9333ea', border: '#7e22ce', text: '#3b0764' }
+            },
+            D20: {
+                id: 'D20',
+                sides: 20,
+                radius: 1.22,
+                mass: 1.5,
+                badgeClass: 'text-amber-300 border-amber-500/40',
+                btnColor: 'from-amber-400 to-orange-600',
+                palette: { c0: '#fffbeb', c1: '#fde68a', c2: '#d97706', border: '#b45309', text: '#451a03' }
+            }
+        };
+
+        const LOCKED_PALETTE = {
+            c0: '#fff1f2',
+            c1: '#fecdd3',
+            c2: '#ef4444',
+            border: '#dc2626',
+            text: '#991b1b'
+        };
+
+        /**
+         * Creates normal and locked textures for D6 traditional pips
+         */
+        function createD6PipTextures(faceValue, palette) {
+            const makeCanvas = (lockedMode) => {
+                const pal = lockedMode ? LOCKED_PALETTE : palette;
+                const size = 256;
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+
+                const grad = ctx.createRadialGradient(size / 2, size / 2, size * 0.1, size / 2, size / 2, size * 0.72);
+                grad.addColorStop(0, pal.c0);
+                grad.addColorStop(0.8, pal.c1);
+                grad.addColorStop(1, pal.c2);
+
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, size, size);
+
+                ctx.strokeStyle = pal.border;
+                ctx.lineWidth = lockedMode ? 14 : 8;
+                ctx.strokeRect(10, 10, size - 20, size - 20);
+
+                const pipLayouts = {
+                    1: [[0.5, 0.5]],
+                    2: [[0.28, 0.28], [0.72, 0.72]],
+                    3: [[0.26, 0.26], [0.5, 0.5], [0.74, 0.74]],
+                    4: [[0.28, 0.28], [0.72, 0.28], [0.28, 0.72], [0.72, 0.72]],
+                    5: [[0.26, 0.26], [0.74, 0.26], [0.5, 0.5], [0.26, 0.74], [0.74, 0.74]],
+                    6: [[0.28, 0.24], [0.72, 0.24], [0.28, 0.5], [0.72, 0.5], [0.28, 0.76], [0.72, 0.76]]
+                };
+
+                (pipLayouts[faceValue] || []).forEach(([nx, ny]) => {
+                    const cx = nx * size;
+                    const cy = ny * size;
+                    const r = faceValue === 1 ? size * 0.135 : size * 0.098;
+
+                    ctx.beginPath();
+                    ctx.arc(cx, cy + 2, r, 0, Math.PI * 2);
+                    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+                    ctx.fill();
+
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+                    ctx.fillStyle = lockedMode ? '#b91c1c' : (faceValue === 1 ? '#dc2626' : pal.text);
+                    ctx.fill();
+                });
+
+                const tex = new THREE.CanvasTexture(canvas);
+                tex.anisotropy = 4;
+                return tex;
+            };
+
+            return { normal: makeCanvas(false), locked: makeCanvas(true) };
+        }
+
+        /**
+         * Creates normal and locked textures for polygonal faces (D8, D12, D20)
+         * Draws polygon bevel outline and crisp centered numeral (with dot under 6 and 9)
+         */
+        function createPolygonNumberTextures(labelNumber, polySides, palette, fontScale = 1.0) {
+            const makeCanvas = (lockedMode) => {
+                const pal = lockedMode ? LOCKED_PALETTE : palette;
+                const size = 256;
+                const cx = size / 2;
+                const cy = size / 2;
+                const uvRadius = size * 0.42;
+
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+
+                const grad = ctx.createRadialGradient(cx, cy, size * 0.05, cx, cy, size * 0.55);
+                grad.addColorStop(0, pal.c0);
+                grad.addColorStop(0.75, pal.c1);
+                grad.addColorStop(1, pal.c2);
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, size, size);
+
+                // Draw polygon border matching the UV projection
+                ctx.beginPath();
+                for (let k = 0; k < polySides; k++) {
+                    const angle = -Math.PI / 2 + (k * 2 * Math.PI) / polySides;
+                    const px = cx + uvRadius * 0.92 * Math.cos(angle);
+                    const py = cy + uvRadius * 0.92 * Math.sin(angle);
+                    if (k === 0) ctx.moveTo(px, py);
+                    else ctx.lineTo(px, py);
+                }
+                ctx.closePath();
+                ctx.lineWidth = lockedMode ? 10 : 6;
+                ctx.strokeStyle = pal.border;
+                ctx.stroke();
+
+                // Numeral text
+                const numStr = String(labelNumber);
+                const fontSize = Math.round(size * 0.31 * fontScale * (numStr.length > 1 ? 0.82 : 1.0));
+                ctx.font = `800 ${fontSize}px "Inter", sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                const textY = polySides === 3 ? cy + size * 0.04 : cy;
+
+                // Subtle highlight/shadow
+                ctx.fillStyle = 'rgba(255,255,255,0.6)';
+                ctx.fillText(numStr, cx, textY + 2);
+
+                ctx.fillStyle = pal.text;
+                ctx.fillText(numStr, cx, textY);
+
+                // Orientation dot under 6 or 9
+                if (labelNumber === 6 || labelNumber === 9) {
+                    ctx.beginPath();
+                    ctx.arc(cx, textY + fontSize * 0.52, fontSize * 0.08, 0, Math.PI * 2);
+                    ctx.fillStyle = pal.text;
+                    ctx.fill();
+                }
+
+                const tex = new THREE.CanvasTexture(canvas);
+                tex.anisotropy = 4;
+                return tex;
+            };
+
+            return { normal: makeCanvas(false), locked: makeCanvas(true) };
+        }
+
+        /**
+         * Creates traditional D4 triangular face textures where each of the 3 corners displays
+         * the value of that vertex, upright when that vertex points toward the apex (+Y)
+         */
+        function createD4FaceTextures(cornerValues, palette) {
+            const makeCanvas = (lockedMode) => {
+                const pal = lockedMode ? LOCKED_PALETTE : palette;
+                const size = 256;
+                const cx = size / 2;
+                const cy = size / 2;
+                const uvRadius = size * 0.42;
+
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+
+                const grad = ctx.createRadialGradient(cx, cy, size * 0.05, cx, cy, size * 0.55);
+                grad.addColorStop(0, pal.c0);
+                grad.addColorStop(0.75, pal.c1);
+                grad.addColorStop(1, pal.c2);
+                ctx.fillStyle = grad;
+                ctx.fillRect(0, 0, size, size);
+
+                // Triangle border
+                const angles = [-Math.PI / 2, -Math.PI / 2 + (2 * Math.PI) / 3, -Math.PI / 2 + (4 * Math.PI) / 3];
+                ctx.beginPath();
+                angles.forEach((ang, idx) => {
+                    const px = cx + uvRadius * 0.92 * Math.cos(ang);
+                    const py = cy + uvRadius * 0.92 * Math.sin(ang);
+                    if (idx === 0) ctx.moveTo(px, py);
+                    else ctx.lineTo(px, py);
+                });
+                ctx.closePath();
+                ctx.lineWidth = lockedMode ? 10 : 6;
+                ctx.strokeStyle = pal.border;
+                ctx.stroke();
+
+                // Center decorative triangle emblem
+                ctx.beginPath();
+                angles.forEach((ang, idx) => {
+                    const px = cx + uvRadius * 0.22 * Math.cos(ang);
+                    const py = cy + uvRadius * 0.22 * Math.sin(ang);
+                    if (idx === 0) ctx.moveTo(px, py);
+                    else ctx.lineTo(px, py);
+                });
+                ctx.closePath();
+                ctx.fillStyle = pal.border;
+                ctx.globalAlpha = 0.25;
+                ctx.fill();
+                ctx.globalAlpha = 1.0;
+
+                // Draw each corner's vertex number rotated so it stands upright when that vertex is the top apex
+                const fontSize = Math.round(size * 0.20);
+                ctx.font = `800 ${fontSize}px "Inter", sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+
+                for (let k = 0; k < 3; k++) {
+                    const ang = angles[k];
+                    const dist = uvRadius * 0.54;
+                    const tx = cx + dist * Math.cos(ang);
+                    const ty = cy + dist * Math.sin(ang);
+
+                    ctx.save();
+                    ctx.translate(tx, ty);
+                    // Rotate so top of text points toward the corner (ang + PI/2)
+                    ctx.rotate(ang + Math.PI / 2);
+                    ctx.fillStyle = pal.text;
+                    ctx.fillText(String(cornerValues[k]), 0, 0);
+                    ctx.restore();
+                }
+
+                const tex = new THREE.CanvasTexture(canvas);
+                tex.anisotropy = 4;
+                return tex;
+            };
+
+            return { normal: makeCanvas(false), locked: makeCanvas(true) };
+        }
+
+        /**
+         * Builds a Three.js BufferGeometry (with per-face material groups and clean planar UVs)
+         * and a matching Cannon-es ConvexPolyhedron shape from any convex Three.js geometry.
+         */
+        function buildPolyhedralAsset(typeKey) {
+            const cfg = DICE_TYPES[typeKey];
+
+            // Special handling for D6 BoxGeometry
+            if (typeKey === 'D6') {
+                const s = cfg.size;
+                const geo = new THREE.BoxGeometry(s, s, s);
+                const half = new CANNON.Vec3(s / 2, s / 2, s / 2);
+                const shape = new CANNON.Box(half);
+
+                const faceValues = [3, 4, 1, 6, 2, 5];
+                const faceNormals = [
+                    new THREE.Vector3(1, 0, 0),
+                    new THREE.Vector3(-1, 0, 0),
+                    new THREE.Vector3(0, 1, 0),
+                    new THREE.Vector3(0, -1, 0),
+                    new THREE.Vector3(0, 0, 1),
+                    new THREE.Vector3(0, 0, -1)
+                ];
+
+                const normalMats = [];
+                const lockedMats = [];
+                faceValues.forEach(val => {
+                    const texPair = createD6PipTextures(val, cfg.palette);
+                    normalMats.push(new THREE.MeshStandardMaterial({ map: texPair.normal, roughness: 0.22, metalness: 0.05 }));
+                    lockedMats.push(new THREE.MeshStandardMaterial({
+                        map: texPair.locked,
+                        roughness: 0.18,
+                        metalness: 0.1,
+                        emissive: new THREE.Color(0xdc2626),
+                        emissiveIntensity: 0.55
+                    }));
+                });
+
+                return {
+                    geometry: geo,
+                    shape,
+                    normalMats,
+                    lockedMats,
+                    faceNormals,
+                    faceValues
+                };
+            }
+
+            // Build base convex geometry for D4, D8, D12, D20
+            let rawGeo;
+            if (typeKey === 'D4') rawGeo = new THREE.TetrahedronGeometry(cfg.radius, 0);
+            else if (typeKey === 'D8') rawGeo = new THREE.OctahedronGeometry(cfg.radius, 0);
+            else if (typeKey === 'D12') rawGeo = new THREE.DodecahedronGeometry(cfg.radius, 0);
+            else if (typeKey === 'D20') rawGeo = new THREE.IcosahedronGeometry(cfg.radius, 0);
+
+            const nonIndexed = rawGeo.toNonIndexed();
+            const posAttr = nonIndexed.attributes.position;
+            const triCount = posAttr.count / 3;
+
+            // 1. Extract unique welded vertices for Cannon.ConvexPolyhedron
+            const uniqueVerts = [];
+            const vertEps = 1e-4;
+            const getUniqueVertIndex = (v) => {
+                for (let i = 0; i < uniqueVerts.length; i++) {
+                    if (uniqueVerts[i].distanceTo(v) < vertEps) return i;
+                }
+                uniqueVerts.push(v.clone());
+                return uniqueVerts.length - 1;
+            };
+
+            // 2. Cluster coplanar triangles into logical polygonal faces (12 pentagons for D12, triangles for D4/D8/D20)
+            const faceClusters = [];
+            for (let t = 0; t < triCount; t++) {
+                const v0 = new THREE.Vector3().fromBufferAttribute(posAttr, t * 3 + 0);
+                const v1 = new THREE.Vector3().fromBufferAttribute(posAttr, t * 3 + 1);
+                const v2 = new THREE.Vector3().fromBufferAttribute(posAttr, t * 3 + 2);
+
+                const i0 = getUniqueVertIndex(v0);
+                const i1 = getUniqueVertIndex(v1);
+                const i2 = getUniqueVertIndex(v2);
+
+                const normal = new THREE.Vector3()
+                    .subVectors(v1, v0)
+                    .cross(new THREE.Vector3().subVectors(v2, v0))
+                    .normalize();
+
+                // Ensure normal strictly points outward from origin
+                const triCenter = new THREE.Vector3().add(v0).add(v1).add(v2).divideScalar(3);
+                if (normal.dot(triCenter) < 0) {
+                    normal.negate();
+                }
+
+                let cluster = faceClusters.find(c => c.normal.dot(normal) > 0.99);
+                if (!cluster) {
+                    cluster = { normal: normal.clone(), tris: [], vertIndices: new Set() };
+                    faceClusters.push(cluster);
+                }
+                cluster.tris.push([v0, v1, v2]);
+                cluster.vertIndices.add(i0);
+                cluster.vertIndices.add(i1);
+                cluster.vertIndices.add(i2);
+            }
+
+            // 3. Pair opposite faces for balanced numbering (opposite sides sum to N + 1 for D8, D12, D20)
+            const numFaces = faceClusters.length;
+            const faceValues = new Array(numFaces).fill(1);
+
+            if (typeKey !== 'D4') {
+                const assigned = new Array(numFaces).fill(false);
+                let nextLow = 1;
+                for (let i = 0; i < numFaces; i++) {
+                    if (assigned[i]) continue;
+                    assigned[i] = true;
+                    faceValues[i] = nextLow;
+
+                    let bestOpp = -1;
+                    let minDot = Infinity;
+                    for (let j = i + 1; j < numFaces; j++) {
+                        if (assigned[j]) continue;
+                        const d = faceClusters[i].normal.dot(faceClusters[j].normal);
+                        if (d < minDot) {
+                            minDot = d;
+                            bestOpp = j;
+                        }
+                    }
+                    if (bestOpp !== -1) {
+                        assigned[bestOpp] = true;
+                        faceValues[bestOpp] = numFaces + 1 - nextLow;
+                    }
+                    nextLow++;
+                }
+            }
+
+            // 4. Construct final BufferGeometry with planar UVs and strictly outward counter-clockwise Cannon faces
+            const outPositions = [];
+            const outNormals = [];
+            const outUVs = [];
+            const cannonFaces = [];
+            const faceNormals = [];
+            const normalMats = [];
+            const lockedMats = [];
+
+            const polySides = typeKey === 'D12' ? 5 : 3;
+            const uvScaleRadius = 0.42;
+
+            faceClusters.forEach((cluster, faceIdx) => {
+                const n = cluster.normal.clone().normalize();
+                faceNormals.push(n);
+
+                const idxArr = Array.from(cluster.vertIndices);
+                const center = new THREE.Vector3();
+                idxArr.forEach(idx => center.add(uniqueVerts[idx]));
+                center.divideScalar(idxArr.length);
+
+                // Pick first vertex as "top" direction (angle -PI/2 in canvas space)
+                const vTop = uniqueVerts[idxArr[0]].clone().sub(center).normalize();
+                // Right-handed basis on face plane: uAxis x vAxis = n (outward normal)
+                const uAxis = new THREE.Vector3().crossVectors(vTop, n).normalize();
+                const vAxis = new THREE.Vector3().crossVectors(n, uAxis).normalize();
+
+                let maxR = 0;
+                idxArr.forEach(idx => {
+                    const r = uniqueVerts[idx].distanceTo(center);
+                    if (r > maxR) maxR = r;
+                });
+
+                // Sort cluster vertex indices strictly counter-clockwise around outward normal `n`
+                const sortedCannonIndices = idxArr.slice().sort((a, b) => {
+                    const va = uniqueVerts[a].clone().sub(center);
+                    const vb = uniqueVerts[b].clone().sub(center);
+                    const angA = Math.atan2(va.dot(vAxis), va.dot(uAxis));
+                    const angB = Math.atan2(vb.dot(vAxis), vb.dot(uAxis));
+                    return angA - angB;
+                });
+
+                // Verify outward winding for Cannon.ConvexPolyhedron
+                const pA = uniqueVerts[sortedCannonIndices[0]];
+                const pB = uniqueVerts[sortedCannonIndices[1]];
+                const pC = uniqueVerts[sortedCannonIndices[2]];
+                const testCross = new THREE.Vector3().subVectors(pB, pA).cross(new THREE.Vector3().subVectors(pC, pA));
+                if (testCross.dot(n) < 0) {
+                    sortedCannonIndices.reverse();
+                }
+                cannonFaces.push(sortedCannonIndices);
+
+                // Push triangles & compute planar UVs
+                cluster.tris.forEach(([p0, p1, p2]) => {
+                    [p0, p1, p2].forEach(p => {
+                        outPositions.push(p.x, p.y, p.z);
+                        outNormals.push(n.x, n.y, n.z);
+
+                        const rel = p.clone().sub(center);
+                        const xProj = rel.dot(uAxis) / maxR;
+                        const yProj = rel.dot(vAxis) / maxR;
+
+                        const u = 0.5 + xProj * uvScaleRadius;
+                        const v = 0.5 + yProj * uvScaleRadius;
+                        outUVs.push(u, v);
+                    });
+                });
+
+                // Create face materials
+                let texPair;
+                if (typeKey === 'D4') {
+                    const angles = [-Math.PI / 2, -Math.PI / 2 + (2 * Math.PI) / 3, -Math.PI / 2 + (4 * Math.PI) / 3];
+                    const cornerVals = angles.map(ang => {
+                        const targetDir = new THREE.Vector3()
+                            .addScaledVector(uAxis, Math.cos(ang))
+                            .addScaledVector(vAxis, -Math.sin(ang))
+                            .normalize();
+                        let bestVertIdx = idxArr[0];
+                        let bestDot = -Infinity;
+                        idxArr.forEach(vIdx => {
+                            const dir = uniqueVerts[vIdx].clone().sub(center).normalize();
+                            const d = dir.dot(targetDir);
+                            if (d > bestDot) {
+                                bestDot = d;
+                                bestVertIdx = vIdx;
+                            }
+                        });
+                        return bestVertIdx + 1;
+                    });
+
+                    for (let vIdx = 0; vIdx < 4; vIdx++) {
+                        if (!cluster.vertIndices.has(vIdx)) {
+                            faceValues[faceIdx] = vIdx + 1;
+                        }
+                    }
+
+                    texPair = createD4FaceTextures(cornerVals, cfg.palette);
+                } else {
+                    const fontScale = typeKey === 'D20' ? 0.76 : (typeKey === 'D12' ? 0.92 : 0.95);
+                    texPair = createPolygonNumberTextures(faceValues[faceIdx], polySides, cfg.palette, fontScale);
+                }
+
+                normalMats.push(new THREE.MeshStandardMaterial({
+                    map: texPair.normal,
+                    roughness: 0.24,
+                    metalness: 0.08
+                }));
+                lockedMats.push(new THREE.MeshStandardMaterial({
+                    map: texPair.locked,
+                    roughness: 0.18,
+                    metalness: 0.12,
+                    emissive: new THREE.Color(0xdc2626),
+                    emissiveIntensity: 0.55
+                }));
+            });
+
+            const finalGeo = new THREE.BufferGeometry();
+            finalGeo.setAttribute('position', new THREE.Float32BufferAttribute(outPositions, 3));
+            finalGeo.setAttribute('normal', new THREE.Float32BufferAttribute(outNormals, 3));
+            finalGeo.setAttribute('uv', new THREE.Float32BufferAttribute(outUVs, 2));
+            let groupOffset = 0;
+            faceClusters.forEach((c, idx) => {
+                const count = c.tris.length * 3;
+                finalGeo.addGroup(groupOffset, count, idx);
+                groupOffset += count;
+            });
+
+            const cannonVerts = uniqueVerts.map(v => new CANNON.Vec3(v.x, v.y, v.z));
+            const shape = new CANNON.ConvexPolyhedron({
+                vertices: cannonVerts,
+                faces: cannonFaces
+            });
+            shape.computeNormals();
+            shape.updateBoundingSphereRadius();
+
+            return {
+                geometry: finalGeo,
+                shape,
+                normalMats,
+                lockedMats,
+                faceNormals,
+                faceValues,
+                uniqueVerts
+            };
+        }
+
+        // Pre-compile geometry, physics shape, and materials for all 5 polyhedral types
+        const POLY_ASSETS = {};
+        Object.keys(DICE_TYPES).forEach(typeKey => {
+            POLY_ASSETS[typeKey] = buildPolyhedralAsset(typeKey);
+        });
+
+        /**************************************************************
+         * 4. SCENE, CAMERA & PHYSICS WORLD SETUP
+         **************************************************************/
+        const container = document.getElementById('canvas-container');
+        const glassOverlay = document.getElementById('glass-overlay');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x090d12);
+
+        const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+        const CAMERA_Y = 22.5;
+        camera.position.set(0, CAMERA_Y, 0);
+        camera.up.set(0, 0, -1);
+        camera.lookAt(0, 0, 0);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        container.appendChild(renderer.domElement);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.68);
+        scene.add(ambientLight);
+
+        const mainSpotLight = new THREE.DirectionalLight(0xfff8eb, 1.45);
+        mainSpotLight.position.set(4, 24, 5);
+        mainSpotLight.castShadow = true;
+        mainSpotLight.shadow.mapSize.width = 2048;
+        mainSpotLight.shadow.mapSize.height = 2048;
+        mainSpotLight.shadow.camera.near = 5;
+        mainSpotLight.shadow.camera.far = 34;
+        const d = 14;
+        mainSpotLight.shadow.camera.left = -d;
+        mainSpotLight.shadow.camera.right = d;
+        mainSpotLight.shadow.camera.top = d;
+        mainSpotLight.shadow.camera.bottom = -d;
+        mainSpotLight.shadow.bias = -0.0005;
+        scene.add(mainSpotLight);
+
+        const fillLight = new THREE.DirectionalLight(0x93c5fd, 0.45);
+        fillLight.position.set(-8, 16, -6);
+        scene.add(fillLight);
+
+        // Physics World - High stability configuration for sharp polyhedra (D4/D8)
+        const world = new CANNON.World();
+        const BASE_GRAVITY = 40;
+        world.gravity.set(0, -BASE_GRAVITY, 0);
+        world.allowSleep = true;
+        world.solver.iterations = 20;
+        world.solver.tolerance = 0.001;
+
+        const dicePhysMat = new CANNON.Material('diceMat');
+        const floorPhysMat = new CANNON.Material('floorMat');
+        const wallPhysMat = new CANNON.Material('wallMat');
+        const glassPhysMat = new CANNON.Material('glassMat');
+
+        // Low bounce + tuned contact equation relaxation stops D4 vertices from popping or jittering
+        world.addContactMaterial(new CANNON.ContactMaterial(dicePhysMat, floorPhysMat, {
+            friction: 0.55,
+            restitution: 0.2,
+            contactEquationStiffness: 1e7,
+            contactEquationRelaxation: 4
+        }));
+        world.addContactMaterial(new CANNON.ContactMaterial(dicePhysMat, wallPhysMat, {
+            friction: 0.2,
+            restitution: 0.38,
+            contactEquationStiffness: 1e7,
+            contactEquationRelaxation: 4
+        }));
+        world.addContactMaterial(new CANNON.ContactMaterial(dicePhysMat, dicePhysMat, {
+            friction: 0.25,
+            restitution: 0.32,
+            contactEquationStiffness: 1e7,
+            contactEquationRelaxation: 4
+        }));
+        world.addContactMaterial(new CANNON.ContactMaterial(dicePhysMat, glassPhysMat, {
+            friction: 0.12,
+            restitution: 0.25,
+            contactEquationStiffness: 1e7,
+            contactEquationRelaxation: 4
+        }));
+
+        /**************************************************************
+         * 5. BOUNDED 3D WOODEN BOX & INVISIBLE GLASS CEILING
+         **************************************************************/
+        const BOX_HEIGHT = 6.2;
+        const WALL_THICKNESS = 2.0;
+        let boxHalfWidth = 6.5;
+        let boxHalfDepth = 8.5;
+
+        const feltTexture = createFeltTexture();
+        const woodTexture = createWoodTexture();
+
+        const floorGeo = new THREE.PlaneGeometry(60, 60);
+        const floorMat = new THREE.MeshStandardMaterial({
+            map: feltTexture,
+            roughness: 0.88,
+            metalness: 0.05
+        });
+        const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+        floorMesh.rotation.x = -Math.PI / 2;
+        floorMesh.receiveShadow = true;
+        scene.add(floorMesh);
+
+        const floorBody = new CANNON.Body({ mass: 0, material: floorPhysMat });
+        floorBody.addShape(new CANNON.Plane());
+        floorBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+        floorBody.userData = { surfaceType: 'floor' };
+        world.addBody(floorBody);
+
+        const ceilingBody = new CANNON.Body({ mass: 0, material: glassPhysMat });
+        ceilingBody.addShape(new CANNON.Plane());
+        ceilingBody.position.set(0, BOX_HEIGHT, 0);
+        ceilingBody.quaternion.setFromEuler(Math.PI / 2, 0, 0);
+        ceilingBody.userData = { surfaceType: 'glass' };
+        world.addBody(ceilingBody);
+
+        const wallMatVisual = new THREE.MeshStandardMaterial({
+            map: woodTexture,
+            roughness: 0.55,
+            metalness: 0.1
+        });
+
+        const walls = {
+            left: { mesh: new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), wallMatVisual), body: new CANNON.Body({ mass: 0, material: wallPhysMat }) },
+            right: { mesh: new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), wallMatVisual), body: new CANNON.Body({ mass: 0, material: wallPhysMat }) },
+            top: { mesh: new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), wallMatVisual), body: new CANNON.Body({ mass: 0, material: wallPhysMat }) },
+            bottom: { mesh: new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), wallMatVisual), body: new CANNON.Body({ mass: 0, material: wallPhysMat }) }
+        };
+
+        Object.values(walls).forEach(w => {
+            w.mesh.castShadow = true;
+            w.mesh.receiveShadow = true;
+            scene.add(w.mesh);
+            w.body.userData = { surfaceType: 'wood' };
+            world.addBody(w.body);
+        });
+
+        function updateBoxDimensions() {
+            const aspect = window.innerWidth / window.innerHeight;
+            const vFovRad = THREE.MathUtils.degToRad(camera.fov);
+
+            const distToLid = CAMERA_Y - BOX_HEIGHT;
+            const visibleHeightAtLid = 2 * Math.tan(vFovRad / 2) * distToLid;
+            const visibleWidthAtLid = visibleHeightAtLid * aspect;
+
+            boxHalfWidth = Math.max(3.6, (visibleWidthAtLid / 2) - 0.35);
+            boxHalfDepth = Math.max(3.6, (visibleHeightAtLid / 2) - 0.35);
+
+            const wallH = BOX_HEIGHT + 2.5;
+            const wallY = wallH / 2 - 0.5;
+
+            const lrArgs = [WALL_THICKNESS, wallH, boxHalfDepth * 2 + WALL_THICKNESS * 2];
+            ['left', 'right'].forEach((side, idx) => {
+                const sign = idx === 0 ? -1 : 1;
+                const xPos = sign * (boxHalfWidth + WALL_THICKNESS / 2);
+                const w = walls[side];
+
+                w.mesh.geometry.dispose();
+                w.mesh.geometry = new THREE.BoxGeometry(...lrArgs);
+                w.mesh.position.set(xPos, wallY, 0);
+
+                w.body.shapes.length = 0;
+                w.body.addShape(new CANNON.Box(new CANNON.Vec3(lrArgs[0] / 2, lrArgs[1] / 2, lrArgs[2] / 2)));
+                w.body.position.set(xPos, wallY, 0);
+            });
+
+            const tbArgs = [boxHalfWidth * 2 + WALL_THICKNESS * 2, wallH, WALL_THICKNESS];
+            ['top', 'bottom'].forEach((side, idx) => {
+                const sign = idx === 0 ? -1 : 1;
+                const zPos = sign * (boxHalfDepth + WALL_THICKNESS / 2);
+                const w = walls[side];
+
+                w.mesh.geometry.dispose();
+                w.mesh.geometry = new THREE.BoxGeometry(...tbArgs);
+                w.mesh.position.set(0, wallY, zPos);
+
+                w.body.shapes.length = 0;
+                w.body.addShape(new CANNON.Box(new CANNON.Vec3(tbArgs[0] / 2, tbArgs[1] / 2, tbArgs[2] / 2)));
+                w.body.position.set(0, wallY, zPos);
+            });
+        }
+
+        updateBoxDimensions();
+
+        /**************************************************************
+         * 6. DYNAMIC POLYHEDRAL DICE MANAGEMENT (ADD, REMOVE, LOCK)
+         **************************************************************/
+        const MAX_DICE = 24;
+        const diceList = [];
+        let nextDieUid = 1;
+
+        function addDie(typeKey = 'D6', customXZ = null, tossOnSpawn = true) {
+            if (diceList.length >= MAX_DICE) return null;
+            const cfg = DICE_TYPES[typeKey] || DICE_TYPES.D6;
+            const asset = POLY_ASSETS[typeKey];
+
+            const mesh = new THREE.Mesh(asset.geometry, asset.normalMats);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            scene.add(mesh);
+
+            // Red glowing aura sprite + point light for locked state
+            const glowSpriteMat = new THREE.SpriteMaterial({
+                map: redGlowTexture,
+                color: 0xff2222,
+                transparent: true,
+                opacity: 0.92,
+                blending: THREE.AdditiveBlending,
+                depthWrite: false
+            });
+            const glowSprite = new THREE.Sprite(glowSpriteMat);
+            const glowDiam = cfg.radius * 3.1;
+            glowSprite.scale.set(glowDiam, glowDiam, 1);
+            glowSprite.visible = false;
+            mesh.add(glowSprite);
+
+            const redLight = new THREE.PointLight(0xff2a2a, 0, 5.5);
+            redLight.position.set(0, 0.4, 0);
+            mesh.add(redLight);
+
+            const body = new CANNON.Body({
+                mass: cfg.mass,
+                material: dicePhysMat,
+                linearDamping: 0.18,
+                angularDamping: typeKey === 'D4' ? 0.32 : 0.22,
+                allowSleep: true,
+                sleepSpeedLimit: 0.28,
+                sleepTimeLimit: 0.35
+            });
+            body.addShape(asset.shape);
+
+            const uid = nextDieUid++;
+            body.userData = { surfaceType: 'die', uid };
+
+            const spawnX = customXZ ? customXZ[0] : (Math.random() - 0.5) * Math.max(2, boxHalfWidth * 0.9);
+            const spawnZ = customXZ ? customXZ[1] : (Math.random() - 0.5) * Math.max(2, boxHalfDepth * 0.9);
+            const spawnY = 2.1 + (diceList.length % 5) * 0.35;
+            body.position.set(spawnX, spawnY, spawnZ);
+
+            body.quaternion.setFromEuler(
+                Math.random() * Math.PI * 2,
+                Math.random() * Math.PI * 2,
+                Math.random() * Math.PI * 2
+            );
+
+            if (tossOnSpawn) {
+                body.velocity.set((Math.random() - 0.5) * 14, 6 + Math.random() * 5, (Math.random() - 0.5) * 14);
+                body.angularVelocity.set(
+                    (Math.random() - 0.5) * 22,
+                    (Math.random() - 0.5) * 22,
+                    (Math.random() - 0.5) * 22
+                );
+            }
+
+            body.addEventListener('collide', (event) => {
+                const relVel = Math.abs(event.contact.getImpactVelocityAlongNormal());
+                if (relVel > 1.3) {
+                    const otherSurface = event.body?.userData?.surfaceType || 'wood';
+                    soundFX.playCollide(relVel, otherSurface);
+                }
+            });
+
+            world.addBody(body);
+
+            const dieObj = {
+                uid,
+                type: typeKey,
+                cfg,
+                asset,
+                mesh,
+                body,
+                glowSprite,
+                redLight,
+                locked: false,
+                lockedPosition: new CANNON.Vec3(),
+                lockedQuaternion: new CANNON.Quaternion(),
+                value: 1
+            };
+
+            mesh.userData.dieRef = dieObj;
+            diceList.push(dieObj);
+
+            rebuildHUDDiceList();
+            return dieObj;
+        }
+
+        function removeDie(dieObj) {
+            const idx = diceList.indexOf(dieObj);
+            if (idx === -1) return;
+
+            scene.remove(dieObj.mesh);
+            if (dieObj.glowSprite.material) dieObj.glowSprite.material.dispose();
+            world.removeBody(dieObj.body);
+            diceList.splice(idx, 1);
+
+            soundFX.playSpawn(false);
+            rebuildHUDDiceList();
+        }
+
+        function removeOneDieByType(typeKey) {
+            // Prefer removing an unlocked die of that type first
+            for (let i = diceList.length - 1; i >= 0; i--) {
+                if (diceList[i].type === typeKey && !diceList[i].locked) {
+                    removeDie(diceList[i]);
+                    return;
+                }
+            }
+            // Otherwise remove any die of that type
+            for (let i = diceList.length - 1; i >= 0; i--) {
+                if (diceList[i].type === typeKey) {
+                    removeDie(diceList[i]);
+                    return;
+                }
+            }
+        }
+
+        function resetToDefault5D6() {
+            while (diceList.length > 0) {
+                const d = diceList.pop();
+                scene.remove(d.mesh);
+                if (d.glowSprite.material) d.glowSprite.material.dispose();
+                world.removeBody(d.body);
+            }
+            const startOffsets = [
+                [-1.9, -1.8],
+                [1.9, -1.8],
+                [0, 0],
+                [-1.9, 1.8],
+                [1.9, 1.8]
+            ];
+            startOffsets.forEach(xz => addDie('D6', xz, false));
+            rebuildHUDDiceList();
+        }
+
+        /**************************************************************
+         * 7. LOCK / UNLOCK & ACCURATE POLYHEDRAL VALUE DETECTION
+         **************************************************************/
+        function toggleDieLock(die) {
+            die.locked = !die.locked;
+            soundFX.playLockToggle(die.locked);
+
+            if (die.locked) {
+                die.lockedPosition.copy(die.body.position);
+                die.lockedQuaternion.copy(die.body.quaternion);
+                die.body.type = CANNON.Body.KINEMATIC;
+                die.body.velocity.setZero();
+                die.body.angularVelocity.setZero();
+                die.body.updateMassProperties();
+
+                die.mesh.material = die.asset.lockedMats;
+                die.glowSprite.visible = true;
+                die.redLight.intensity = 2.4;
+            } else {
+                die.body.type = CANNON.Body.DYNAMIC;
+                die.body.mass = die.cfg.mass;
+                die.body.updateMassProperties();
+                die.body.wakeUp();
+                die.body.velocity.set(0, 3.5, 0);
+
+                die.mesh.material = die.asset.normalMats;
+                die.glowSprite.visible = false;
+                die.redLight.intensity = 0;
+            }
+
+            updateHUDReadout();
+        }
+
+        function unlockAllDice() {
+            let changed = false;
+            diceList.forEach(die => {
+                if (die.locked) {
+                    die.locked = false;
+                    die.body.type = CANNON.Body.DYNAMIC;
+                    die.body.mass = die.cfg.mass;
+                    die.body.updateMassProperties();
+                    die.body.wakeUp();
+                    die.body.velocity.set(0, 4, 0);
+
+                    die.mesh.material = die.asset.normalMats;
+                    die.glowSprite.visible = false;
+                    die.redLight.intensity = 0;
+                    changed = true;
+                }
+            });
+            if (changed) {
+                soundFX.playLockToggle(false);
+                updateHUDReadout();
+            }
+        }
+
+        /**
+         * Determines the rolled value of any polyhedral die (D4, D6, D8, D12, D20):
+         * - For D4: finds the face resting flat on the floor (normal pointing most strongly toward -Y)
+         *   which corresponds to the upright apex vertex number.
+         * - For D6, D8, D12, D20: finds the face whose normal points most strongly upward (+Y).
+         */
+        const tempVec = new THREE.Vector3();
+        function getTopFaceValue(die) {
+            const { faceNormals, faceValues } = die.asset;
+
+            if (die.type === 'D4') {
+                let minDotY = Infinity;
+                let bestVal = 1;
+                for (let i = 0; i < faceNormals.length; i++) {
+                    tempVec.copy(faceNormals[i]).applyQuaternion(die.mesh.quaternion);
+                    if (tempVec.y < minDotY) {
+                        minDotY = tempVec.y;
+                        bestVal = faceValues[i];
+                    }
+                }
+                return bestVal;
+            } else {
+                let maxDotY = -Infinity;
+                let bestVal = 1;
+                for (let i = 0; i < faceNormals.length; i++) {
+                    tempVec.copy(faceNormals[i]).applyQuaternion(die.mesh.quaternion);
+                    if (tempVec.y > maxDotY) {
+                        maxDotY = tempVec.y;
+                        bestVal = faceValues[i];
+                    }
+                }
+                return bestVal;
+            }
+        }
+
+        /**************************************************************
+         * 8. ROLLING PHYSICS (SWIPE IMPULSE, BUTTON ROLL, SHAKE)
+         **************************************************************/
+        function applyRollToUnlockedDice(dirX = 0, dirZ = 0, strength = 1.0) {
+            soundFX.init();
+
+            const statusBanner = document.getElementById('status-banner');
+            if (statusBanner) statusBanner.style.opacity = '0';
+
+            const unlocked = diceList.filter(d => !d.locked);
+            if (unlocked.length === 0) return;
+
+            unlocked.forEach((die) => {
+                die.body.wakeUp();
+
+                const jitterX = (Math.random() - 0.5) * 14;
+                const jitterZ = (Math.random() - 0.5) * 14;
+                const vx = THREE.MathUtils.clamp(dirX * 24 * strength + jitterX, -34, 34);
+                const vz = THREE.MathUtils.clamp(dirZ * 24 * strength + jitterZ, -34, 34);
+                const vy = 9 + Math.random() * 11 * strength;
+
+                die.body.velocity.set(vx, vy, vz);
+
+                const spinPower = 24 * Math.max(0.75, strength);
+                die.body.angularVelocity.set(
+                    (Math.random() - 0.5) * 2 * spinPower,
+                    (Math.random() - 0.5) * 2 * spinPower,
+                    (Math.random() - 0.5) * 2 * spinPower
+                );
+            });
+        }
+
+        /**************************************************************
+         * 9. UNIFIED POINTER INPUT & POPUP MENU DISMISSAL
+         **************************************************************/
+        const raycaster = new THREE.Raycaster();
+        const pointerNDC = new THREE.Vector2();
+
+        const swipeCanvas = document.getElementById('swipe-canvas');
+        const swipeCtx = swipeCanvas.getContext('2d');
+        let swipePoints = [];
+
+        function resizeSwipeCanvas() {
+            swipeCanvas.width = window.innerWidth;
+            swipeCanvas.height = window.innerHeight;
+        }
+        resizeSwipeCanvas();
+
+        let activePointerId = null;
+        let pointerDownPos = { x: 0, y: 0 };
+        let pointerDownTime = 0;
+        let isDraggingGesture = false;
+
+        const diceMenuPopup = document.getElementById('dice-menu-popup');
+        const tiltMenuPopup = document.getElementById('tilt-menu-popup');
+
+        function closeAllPopups() {
+            diceMenuPopup.classList.add('hidden-popup');
+            tiltMenuPopup.classList.add('hidden-popup');
+        }
+
+        function isEventOnUI(e) {
+            return e.target.closest('.interactive-ui') !== null;
+        }
+
+        window.addEventListener('pointerdown', (e) => {
+            if (isEventOnUI(e)) return;
+
+            // Clicking onto the glass box closes any open popup menu
+            closeAllPopups();
+            soundFX.init();
+
+            activePointerId = e.pointerId;
+            pointerDownPos = { x: e.clientX, y: e.clientY };
+            pointerDownTime = performance.now();
+            isDraggingGesture = false;
+            swipePoints = [{ x: e.clientX, y: e.clientY, time: performance.now() }];
+        });
+
+        window.addEventListener('pointermove', (e) => {
+            if (e.pointerId !== activePointerId) return;
+
+            const dx = e.clientX - pointerDownPos.x;
+            const dy = e.clientY - pointerDownPos.y;
+            const dist = Math.hypot(dx, dy);
+
+            if (dist > 14) {
+                isDraggingGesture = true;
+            }
+
+            if (isDraggingGesture) {
+                swipePoints.push({ x: e.clientX, y: e.clientY, time: performance.now() });
+                if (swipePoints.length > 18) swipePoints.shift();
+            }
+        });
+
+        window.addEventListener('pointerup', (e) => {
+            if (e.pointerId !== activePointerId) return;
+
+            const dx = e.clientX - pointerDownPos.x;
+            const dy = e.clientY - pointerDownPos.y;
+            const dist = Math.hypot(dx, dy);
+            const elapsed = Math.max(16, performance.now() - pointerDownTime);
+
+            if (!isDraggingGesture && dist < 15 && elapsed < 380) {
+                handleTapAtScreenCoords(e.clientX, e.clientY);
+            } else if (dist >= 15) {
+                const speed = Math.min(2.2, Math.max(0.65, (dist / elapsed) * 1.15));
+                const normX = dx / dist;
+                const normZ = dy / dist;
+                applyRollToUnlockedDice(normX, normZ, speed);
+            }
+
+            activePointerId = null;
+            isDraggingGesture = false;
+        });
+
+        window.addEventListener('pointercancel', () => {
+            activePointerId = null;
+            isDraggingGesture = false;
+        });
+
+        function handleTapAtScreenCoords(clientX, clientY) {
+            pointerNDC.x = (clientX / window.innerWidth) * 2 - 1;
+            pointerNDC.y = -(clientY / window.innerHeight) * 2 + 1;
+
+            raycaster.setFromCamera(pointerNDC, camera);
+            const meshes = diceList.map(d => d.mesh);
+            const intersects = raycaster.intersectObjects(meshes, false);
+
+            if (intersects.length > 0) {
+                const hitDie = intersects[0].object.userData.dieRef;
+                if (hitDie) {
+                    toggleDieLock(hitDie);
+                }
+            }
+        }
+
+        function renderSwipeTrail() {
+            swipeCtx.clearRect(0, 0, swipeCanvas.width, swipeCanvas.height);
+            const now = performance.now();
+            swipePoints = swipePoints.filter(p => now - p.time < 180);
+
+            if (swipePoints.length < 2) return;
+
+            swipeCtx.save();
+            swipeCtx.lineCap = 'round';
+            swipeCtx.lineJoin = 'round';
+
+            for (let i = 1; i < swipePoints.length; i++) {
+                const p0 = swipePoints[i - 1];
+                const p1 = swipePoints[i];
+                const ratio = i / swipePoints.length;
+
+                swipeCtx.beginPath();
+                swipeCtx.moveTo(p0.x, p0.y);
+                swipeCtx.lineTo(p1.x, p1.y);
+                swipeCtx.strokeStyle = `rgba(251, 191, 36, ${ratio * 0.65})`;
+                swipeCtx.lineWidth = ratio * 10;
+                swipeCtx.stroke();
+            }
+            swipeCtx.restore();
+        }
+
+        /**************************************************************
+         * 10. ROBUST MULTI-API MOBILE ORIENTATION, GRAVITY & CALIBRATION
+         *     Supports Android, iOS 13+ Permission, Generic Sensor API,
+         *     and Zero-Angle Calibration.
+         **************************************************************/
+        const motionBtn = document.getElementById('motion-btn');
+        const motionBtnText = document.getElementById('motion-btn-text');
+        const sensorDiagMsg = document.getElementById('sensor-diag-msg');
+        const tiltPad = document.getElementById('tilt-pad');
+        const tiltDot = document.getElementById('tilt-dot');
+        const gravityReadout = document.getElementById('gravity-readout');
+        const sensorStatusLabel = document.getElementById('sensor-status-label');
+        const sensorLed = document.getElementById('sensor-led');
+        const topSensorDot = document.getElementById('top-sensor-dot');
+        const flipZBtn = document.getElementById('flip-z-btn');
+        const resetTiltBtn = document.getElementById('reset-tilt-btn');
+        const calibrateZeroBtn = document.getElementById('calibrate-zero-btn');
+
+        // Normalized gravity vector components: nx, nz in [-1..1], ny in [-1..1] (-1 = floor, +1 = glass ceiling)
+        let targetTilt = { nx: 0, ny: -1, nz: 0 };
+        let smoothTilt = { nx: 0, ny: -1, nz: 0 };
+        let prevSmoothTilt = { nx: 0, ny: -1, nz: 0 };
+
+        // Raw latest sensor reading so the user can "Zero / Calibrate" their comfortable holding angle
+        let latestRawSensor = { nx: 0, ny: -1, nz: 0 };
+        let calibrationOffset = { nx: 0, nz: 0 };
+
+        let listenersAttached = false;
+        let sensorEventsReceived = 0;
+        let lastOrientationEventTime = 0;
+        let manualPadOverride = false;
+        let lastShakeTimestamp = 0;
+        let prevAccel = { x: 0, y: 0, z: 0 };
+
+        function getScreenOrientationAngle() {
+            if (window.screen?.orientation?.angle !== undefined) {
+                return window.screen.orientation.angle;
+            }
+            return typeof window.orientation === 'number' ? window.orientation : 0;
+        }
+
+        function rotateSensorXYToScreen(sx, sy) {
+            const angle = getScreenOrientationAngle();
+            if (angle === 90) return { x: -sy, y: sx };
+            if (angle === -90 || angle === 270) return { x: sy, y: -sx };
+            if (angle === 180) return { x: -sx, y: -sy };
+            return { x: sx, y: sy };
+        }
+
+        function markSensorLive(sourceLabel) {
+            sensorEventsReceived++;
+            sensorStatusLabel.textContent = sourceLabel;
+            sensorLed.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
+            topSensorDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse';
+            motionBtnText.textContent = 'Recalibrate Flat Center';
+        }
+
+        function wakeUnlockedDiceOnTilt(nx, ny, nz) {
+            const delta = Math.hypot(nx - smoothTilt.nx, ny - smoothTilt.ny, nz - smoothTilt.nz);
+            if (delta > 0.04) {
+                diceList.forEach(d => {
+                    if (!d.locked) d.body.wakeUp();
+                });
+            }
+        }
+
+        function applyGravityFromTilt(nx, ny, nz) {
+            const clampedX = THREE.MathUtils.clamp(nx, -1, 1);
+            const clampedY = THREE.MathUtils.clamp(ny, -1, 1);
+            const clampedZ = THREE.MathUtils.clamp(nz, -1, 1);
+            wakeUnlockedDiceOnTilt(clampedX, clampedY, clampedZ);
+            targetTilt.nx = clampedX;
+            targetTilt.ny = clampedY;
+            targetTilt.nz = clampedZ;
+        }
+
+        function handleOrientationEvent(e) {
+            if (e.beta === null && e.gamma === null) return;
+
+            lastOrientationEventTime = performance.now();
+            const betaRad = THREE.MathUtils.degToRad(e.beta || 0);   // front-to-back [-180..180]
+            const gammaRad = THREE.MathUtils.degToRad(e.gamma || 0); // left-to-right [-90..90]
+
+            // Compute 3D gravity vector from phone orientation angles
+            const rawX = Math.sin(gammaRad) * Math.cos(betaRad);
+            const rawY = Math.sin(betaRad);
+            const rawZ = -Math.cos(betaRad) * Math.cos(gammaRad);
+
+            const scr = rotateSensorXYToScreen(rawX, rawY);
+            latestRawSensor = { nx: scr.x, ny: rawZ, nz: scr.y };
+
+            if (!manualPadOverride) {
+                markSensorLive('ORIENTATION LIVE');
+                // Amplify tilt sensitivity slightly (1.25x) so gentle phone tilts roll dice smoothly
+                const adjX = (scr.x - calibrationOffset.nx) * 1.25;
+                const adjZ = (scr.y - calibrationOffset.nz) * 1.25;
+                applyGravityFromTilt(adjX, rawZ, adjZ);
+            }
+        }
+
+        function handleMotionEvent(e) {
+            const accG = e.accelerationIncludingGravity;
+            if (!accG || (accG.x === null && accG.y === null)) return;
+
+            // Use accelerometer for gravity if deviceorientation isn't actively firing
+            const now = performance.now();
+            if (now - lastOrientationEventTime > 250) {
+                // On Android & iOS, tilting right gives negative accG.x, tilting forward towards user gives positive accG.y
+                const scr = rotateSensorXYToScreen(-accG.x / 9.81, accG.y / 9.81);
+                const ny = THREE.MathUtils.clamp(-(accG.z || 9.81) / 9.81, -1, 1);
+                latestRawSensor = { nx: scr.x, ny, nz: scr.y };
+
+                if (!manualPadOverride) {
+                    markSensorLive('ACCEL GRAVITY LIVE');
+                    const adjX = (scr.x - calibrationOffset.nx) * 1.25;
+                    const adjZ = (scr.y - calibrationOffset.nz) * 1.25;
+                    applyGravityFromTilt(adjX, ny, adjZ);
+                }
+            }
+
+            // Linear shake detection
+            const ax = accG.x || 0;
+            const ay = accG.y || 0;
+            const az = accG.z || 0;
+            const dx = ax - prevAccel.x;
+            const dy = ay - prevAccel.y;
+            const dz = az - prevAccel.z;
+            prevAccel = { x: ax, y: ay, z: az };
+
+            const deltaMag = Math.hypot(dx, dy, dz);
+            if (deltaMag > 13.5 && now - lastShakeTimestamp > 240) {
+                lastShakeTimestamp = now;
+                const dirX = THREE.MathUtils.clamp(-dx / 15, -1.2, 1.2);
+                const dirZ = THREE.MathUtils.clamp(dy / 15, -1.2, 1.2);
+                applyRollToUnlockedDice(dirX, dirZ, Math.min(1.75, deltaMag / 14));
+            }
+        }
+
+        function attachAllSensorListeners() {
+            if (listenersAttached) return;
+            listenersAttached = true;
+
+            window.addEventListener('deviceorientation', handleOrientationEvent, true);
+            window.addEventListener('deviceorientationabsolute', handleOrientationEvent, true);
+            window.addEventListener('devicemotion', handleMotionEvent, true);
+
+            // Also try Chrome Android Generic Sensor API (Accelerometer / GravitySensor) if available
+            try {
+                if ('GravitySensor' in window) {
+                    const gravSensor = new window.GravitySensor({ frequency: 60 });
+                    gravSensor.addEventListener('reading', () => {
+                        if ( performance.now() - lastOrientationEventTime > 250 && !manualPadOverride) {
+                            const scr = rotateSensorXYToScreen(-gravSensor.x / 9.81, gravSensor.y / 9.81);
+                            const ny = THREE.MathUtils.clamp(-gravSensor.z / 9.81, -1, 1);
+                            latestRawSensor = { nx: scr.x, ny, nz: scr.y };
+                            markSensorLive('GRAVITY SENSOR LIVE');
+                            applyGravityFromTilt(
+                                (scr.x - calibrationOffset.nx) * 1.25,
+                                ny,
+                                (scr.y - calibrationOffset.nz) * 1.25
+                            );
+                        }
+                    });
+                    gravSensor.start();
+                } else if ('Accelerometer' in window) {
+                    const accelSensor = new window.Accelerometer({ frequency: 60 });
+                    accelSensor.addEventListener('reading', () => {
+                        if (performance.now() - lastOrientationEventTime > 250 && !manualPadOverride) {
+                            const scr = rotateSensorXYToScreen(-accelSensor.x / 9.81, accelSensor.y / 9.81);
+                            const ny = THREE.MathUtils.clamp(-accelSensor.z / 9.81, -1, 1);
+                            latestRawSensor = { nx: scr.x, ny, nz: scr.y };
+                            markSensorLive('ACCELEROMETER LIVE');
+                            applyGravityFromTilt(
+                                (scr.x - calibrationOffset.nx) * 1.25,
+                                ny,
+                                (scr.y - calibrationOffset.nz) * 1.25
+                            );
+                        }
+                    });
+                    accelSensor.start();
+                }
+            } catch (sensorErr) {
+                // Generic Sensor API blocked by Permissions-Policy or unsupported; standard events remain active
+            }
+        }
+
+        // Attach immediately on load for Android / standard browsers
+        attachAllSensorListeners();
+
+        function calibrateCurrentAngleAsZero() {
+            manualPadOverride = false;
+            calibrationOffset.nx = latestRawSensor.nx;
+            calibrationOffset.nz = latestRawSensor.nz;
+            applyGravityFromTilt(0, latestRawSensor.ny || -1, 0);
+            sensorDiagMsg.textContent = 'Calibrated! Current phone angle set as flat center.';
+            sensorDiagMsg.className = 'text-[10px] text-emerald-400 mt-1.5 leading-snug text-center font-semibold';
+        }
+
+        // Universal "Enable / Calibrate Phone Tilt" button handler (works on both iOS and Android/Desktop)
+        motionBtn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            soundFX.init();
+            manualPadOverride = false;
+
+            let iosPermissionGranted = true;
+            try {
+                if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+                    const res1 = await DeviceOrientationEvent.requestPermission();
+                    iosPermissionGranted = (res1 === 'granted');
+                }
+                if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+                    const res2 = await DeviceMotionEvent.requestPermission();
+                    iosPermissionGranted = iosPermissionGranted || (res2 === 'granted');
+                }
+            } catch (err) {
+                console.warn('Permission request error:', err);
+            }
+
+            attachAllSensorListeners();
+
+            const initialCount = sensorEventsReceived;
+            sensorDiagMsg.textContent = 'Checking device motion & orientation sensors...';
+            sensorDiagMsg.className = 'text-[10px] text-amber-300 mt-1.5 leading-snug text-center';
+
+            setTimeout(() => {
+                if (sensorEventsReceived > initialCount || sensorEventsReceived > 0) {
+                    calibrateCurrentAngleAsZero();
+                    applyRollToUnlockedDice(0.25, -0.25, 0.7);
+                } else if (!iosPermissionGranted) {
+                    sensorDiagMsg.textContent = 'Permission denied. Please allow Motion & Orientation access in browser settings.';
+                    sensorDiagMsg.className = 'text-[10px] text-red-400 mt-1.5 leading-snug text-center';
+                } else {
+                    sensorDiagMsg.textContent = 'No hardware tilt events detected (browser/iframe may block sensors on non-HTTPS or desktop). Use the 3D Tilt Pad below!';
+                    sensorDiagMsg.className = 'text-[10px] text-amber-300 mt-1.5 leading-snug text-center';
+                }
+            }, 350);
+        });
+
+        calibrateZeroBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            soundFX.init();
+            calibrateCurrentAngleAsZero();
+        });
+
+        // Desktop & Touch Interactive Gravity Tilt Pad
+        let padPointerId = null;
+        function updateTiltFromPadEvent(e) {
+            const rect = tiltPad.getBoundingClientRect();
+            const cx = rect.left + rect.width / 2;
+            const cy = rect.top + rect.height / 2;
+            const maxR = rect.width / 2 - 4;
+            const nx = THREE.MathUtils.clamp((e.clientX - cx) / maxR, -1, 1);
+            const nz = THREE.MathUtils.clamp((e.clientY - cy) / maxR, -1, 1);
+
+            manualPadOverride = true;
+            sensorStatusLabel.textContent = 'MANUAL TILT PAD';
+            sensorLed.className = 'w-2 h-2 rounded-full bg-amber-400';
+            topSensorDot.className = 'w-2 h-2 rounded-full bg-amber-400';
+            applyGravityFromTilt(nx, targetTilt.ny, nz);
+        }
+
+        tiltPad.addEventListener('pointerdown', (e) => {
+            e.stopPropagation();
+            soundFX.init();
+            padPointerId = e.pointerId;
+            tiltPad.setPointerCapture(e.pointerId);
+            updateTiltFromPadEvent(e);
+        });
+        tiltPad.addEventListener('pointermove', (e) => {
+            if (e.pointerId !== padPointerId) return;
+            updateTiltFromPadEvent(e);
+        });
+        tiltPad.addEventListener('pointerup', (e) => {
+            if (e.pointerId !== padPointerId) return;
+            padPointerId = null;
+        });
+
+        flipZBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            soundFX.init();
+            manualPadOverride = true;
+            const newNy = targetTilt.ny < 0 ? 1 : -1;
+            applyGravityFromTilt(targetTilt.nx, newNy, targetTilt.nz);
+            flipZBtn.classList.toggle('bg-amber-500', newNy > 0);
+            flipZBtn.classList.toggle('text-slate-950', newNy > 0);
+        });
+
+        resetTiltBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            manualPadOverride = false;
+            calibrationOffset = { nx: 0, nz: 0 };
+            sensorStatusLabel.textContent = sensorEventsReceived > 0 ? 'ORIENTATION LIVE' : 'FLAT GRAVITY';
+            applyGravityFromTilt(0, -1, 0);
+            flipZBtn.classList.remove('bg-amber-500', 'text-slate-950');
+        });
+
+        /**************************************************************
+         * 11. POPUP MENUS, HUD SCORE & POLYHEDRAL SPAWNER
+         **************************************************************/
+        const readoutListEl = document.getElementById('dice-readout-list');
+        const totalSumEl = document.getElementById('total-sum-badge');
+        const diceCountLabel = document.getElementById('dice-count-label');
+        const unlockBtn = document.getElementById('unlock-btn');
+        const rollBtn = document.getElementById('roll-btn');
+        const soundBtn = document.getElementById('sound-btn');
+        const soundIcon = document.getElementById('sound-icon');
+        const polySpawnerGroup = document.getElementById('poly-spawner-group');
+        const preset5d6Btn = document.getElementById('preset-5d6-btn');
+        const presetRpgBtn = document.getElementById('preset-rpg-btn');
+        const clearUnlockedBtn = document.getElementById('clear-unlocked-btn');
+
+        const openDiceMenuBtn = document.getElementById('open-dice-menu-btn');
+        const closeDiceMenuBtn = document.getElementById('close-dice-menu-btn');
+        const openTiltMenuBtn = document.getElementById('open-tilt-menu-btn');
+        const closeTiltMenuBtn = document.getElementById('close-tilt-menu-btn');
+
+        openDiceMenuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            soundFX.init();
+            const isHidden = diceMenuPopup.classList.contains('hidden-popup');
+            closeAllPopups();
+            if (isHidden) diceMenuPopup.classList.remove('hidden-popup');
+        });
+        closeDiceMenuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            diceMenuPopup.classList.add('hidden-popup');
+        });
+
+        openTiltMenuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            soundFX.init();
+            const isHidden = tiltMenuPopup.classList.contains('hidden-popup');
+            closeAllPopups();
+            if (isHidden) tiltMenuPopup.classList.remove('hidden-popup');
+        });
+        closeTiltMenuBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            tiltMenuPopup.classList.add('hidden-popup');
+        });
+
+        // Build clean rows inside Dice Tray Manager Popup for D4, D6, D8, D12, D20
+        const spawnerCountEls = {};
+        Object.keys(DICE_TYPES).forEach(typeKey => {
+            const cfg = DICE_TYPES[typeKey];
+            const row = document.createElement('div');
+            row.className = 'flex items-center justify-between bg-slate-900/90 border border-white/10 rounded-xl px-3 py-1.5';
+
+            row.innerHTML = `
+                <div class="flex items-center gap-2">
+                    <span class="text-xs font-extrabold ${cfg.badgeClass.split(' ')[0]} w-8">${typeKey}</span>
+                    <span class="text-[11px] text-slate-400">${cfg.sides}-Sided Die</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <button class="minus-btn w-7 h-7 rounded-lg bg-slate-800 hover:bg-red-950/80 text-slate-300 hover:text-red-300 border border-white/10 font-bold text-sm flex items-center justify-center active:scale-90 transition">−</button>
+                    <span class="mono-num text-xs font-bold text-white w-5 text-center count-badge">0</span>
+                    <button class="plus-btn w-7 h-7 rounded-lg bg-slate-800 hover:bg-emerald-950/80 text-emerald-300 border border-emerald-500/30 font-bold text-sm flex items-center justify-center active:scale-90 transition">+</button>
+                </div>
+            `;
+
+            row.querySelector('.minus-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                removeOneDieByType(typeKey);
+            });
+            row.querySelector('.plus-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                soundFX.playSpawn(true);
+                addDie(typeKey, null, true);
+            });
+
+            spawnerCountEls[typeKey] = row.querySelector('.count-badge');
+            polySpawnerGroup.appendChild(row);
+        });
+
+        preset5d6Btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            soundFX.playSpawn(true);
+            resetToDefault5D6();
+            applyRollToUnlockedDice(0.4, -0.3, 0.9);
+            closeAllPopups();
+        });
+
+        presetRpgBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            soundFX.playSpawn(true);
+            while (diceList.length > 0) {
+                const d = diceList.pop();
+                scene.remove(d.mesh);
+                if (d.glowSprite.material) d.glowSprite.material.dispose();
+                world.removeBody(d.body);
+            }
+            const types = ['D4', 'D6', 'D8', 'D12', 'D20'];
+            const offsets = [[-2.0, -1.6], [2.0, -1.6], [0, 0], [-2.0, 1.6], [2.0, 1.6]];
+            types.forEach((t, i) => addDie(t, offsets[i], true));
+            rebuildHUDDiceList();
+            closeAllPopups();
+        });
+
+        clearUnlockedBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const toRemove = diceList.filter(d => !d.locked);
+            toRemove.forEach(d => removeDie(d));
+        });
+
+        let dieChipsMap = new Map();
+
+        function rebuildHUDDiceList() {
+            readoutListEl.innerHTML = '';
+            dieChipsMap.clear();
+
+            const typeCounts = { D4: 0, D6: 0, D8: 0, D12: 0, D20: 0 };
+            diceList.forEach(d => { typeCounts[d.type] = (typeCounts[d.type] || 0) + 1; });
+            Object.keys(spawnerCountEls).forEach(k => {
+                spawnerCountEls[k].textContent = typeCounts[k] || 0;
+            });
+
+            diceCountLabel.textContent = `${diceList.length} ${diceList.length === 1 ? 'Die' : 'Dice'}`;
+
+            diceList.forEach((die) => {
+                const wrapper = document.createElement('div');
+                wrapper.className = `die-chip relative shrink-0 px-2 py-0.5 rounded-lg bg-slate-900/90 border ${die.cfg.badgeClass} flex items-center gap-1 cursor-pointer shadow`;
+                wrapper.title = `Tap to Lock/Unlock ${die.type}`;
+
+                wrapper.innerHTML = `
+                    <span class="text-[8px] font-extrabold uppercase tracking-tighter opacity-75">${die.type}</span>
+                    <span class="val mono-num font-extrabold text-xs sm:text-sm text-white">1</span>
+                `;
+
+                wrapper.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleDieLock(die);
+                });
+
+                readoutListEl.appendChild(wrapper);
+                dieChipsMap.set(die.uid, wrapper);
+            });
+
+            updateHUDReadout();
+        }
+
+        function updateHUDReadout() {
+            let sum = 0;
+            let lockedCount = 0;
+
+            diceList.forEach((die) => {
+                const val = getTopFaceValue(die);
+                die.value = val;
+                sum += val;
+                if (die.locked) lockedCount++;
+
+                const chip = dieChipsMap.get(die.uid);
+                if (chip) {
+                    chip.querySelector('.val').textContent = val;
+                    if (die.locked) chip.classList.add('locked');
+                    else chip.classList.remove('locked');
+                }
+            });
+
+            totalSumEl.textContent = sum;
+            unlockBtn.disabled = lockedCount === 0;
+        }
+
+        rollBtn.addEventListener('click', () => {
+            const angle = Math.random() * Math.PI * 2;
+            applyRollToUnlockedDice(Math.cos(angle) * 0.65, Math.sin(angle) * 0.65, 1.15);
+        });
+
+        unlockBtn.addEventListener('click', () => {
+            unlockAllDice();
+        });
+
+        soundBtn.addEventListener('click', () => {
+            soundFX.enabled = !soundFX.enabled;
+            if (soundFX.enabled) {
+                soundFX.init();
+                soundIcon.className = 'fa-solid fa-volume-high text-emerald-400';
+            } else {
+                soundIcon.className = 'fa-solid fa-volume-xmark text-slate-500';
+            }
+        });
+
+        /**************************************************************
+         * 12. RESPONSIVE RESIZE & SAFETY BOUNDARY CLAMPING
+         **************************************************************/
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            resizeSwipeCanvas();
+            updateBoxDimensions();
+
+            diceList.forEach(die => {
+                const r = die.cfg.radius;
+                const maxX = boxHalfWidth - r * 0.65;
+                const maxZ = boxHalfDepth - r * 0.65;
+                die.body.position.x = THREE.MathUtils.clamp(die.body.position.x, -maxX, maxX);
+                die.body.position.z = THREE.MathUtils.clamp(die.body.position.z, -maxZ, maxZ);
+                if (die.locked) {
+                    die.lockedPosition.copy(die.body.position);
+                }
+            });
+        });
+
+        /**************************************************************
+         * 13. MAIN ANIMATION, 3D GRAVITY & PARALLAX LOOP
+         **************************************************************/
+        let lastFrameTime = performance.now();
+        let hudRefreshCounter = 0;
+
+        function animate(now = performance.now()) {
+            requestAnimationFrame(animate);
+
+            const dt = Math.min((now - lastFrameTime) / 1000, 0.1);
+            lastFrameTime = now;
+
+            // Smoothly interpolate 3D gravity vector & update physics world
+            prevSmoothTilt.nx = smoothTilt.nx;
+            prevSmoothTilt.ny = smoothTilt.ny;
+            prevSmoothTilt.nz = smoothTilt.nz;
+
+            smoothTilt.nx += (targetTilt.nx - smoothTilt.nx) * 0.22;
+            smoothTilt.ny += (targetTilt.ny - smoothTilt.ny) * 0.22;
+            smoothTilt.nz += (targetTilt.nz - smoothTilt.nz) * 0.22;
+
+            const gravityChangeRate = Math.hypot(
+                smoothTilt.nx - prevSmoothTilt.nx,
+                smoothTilt.ny - prevSmoothTilt.ny,
+                smoothTilt.nz - prevSmoothTilt.nz
+            );
+
+            world.gravity.set(
+                smoothTilt.nx * BASE_GRAVITY * 0.9,
+                smoothTilt.ny * BASE_GRAVITY,
+                smoothTilt.nz * BASE_GRAVITY * 0.9
+            );
+
+            // Off-axis camera & directional light parallax to enhance 3D glass-box depth
+            camera.position.x = -smoothTilt.nx * 2.2;
+            camera.position.z = -smoothTilt.nz * 2.2;
+            camera.lookAt(smoothTilt.nx * 0.4, 0, smoothTilt.nz * 0.4);
+
+            mainSpotLight.position.x = 4 - smoothTilt.nx * 5;
+            mainSpotLight.position.z = 5 - smoothTilt.nz * 5;
+
+            // Update interactive Gravity Pad indicator dot
+            const dotX = smoothTilt.nx * 20;
+            const dotY = smoothTilt.nz * 20;
+            tiltDot.style.transform = `translate(${dotX.toFixed(1)}px, ${dotY.toFixed(1)}px)`;
+            gravityReadout.textContent = `GX:${smoothTilt.nx.toFixed(1)} GZ:${smoothTilt.nz.toFixed(1)} GY:${smoothTilt.ny.toFixed(1)}`;
+
+            // High-frequency 120Hz fixed physics substeps for rock-solid polyhedral settling
+            world.step(1 / 120, dt, 10);
+
+            const pulseScale = 1 + Math.sin(now * 0.008) * 0.08;
+
+            for (let i = 0; i < diceList.length; i++) {
+                const die = diceList[i];
+                const r = die.cfg.radius * 0.62;
+                const maxX = boxHalfWidth - r;
+                const maxZ = boxHalfDepth - r;
+
+                if (die.locked) {
+                    die.body.position.copy(die.lockedPosition);
+                    die.body.quaternion.copy(die.lockedQuaternion);
+                    die.body.velocity.setZero();
+                    die.body.angularVelocity.setZero();
+
+                    const baseDiam = die.cfg.radius * 3.1;
+                    die.glowSprite.scale.set(
+                        baseDiam * pulseScale,
+                        baseDiam * pulseScale,
+                        1
+                    );
+                } else {
+                    // Extra low-speed settling damping so sharp D4/D8 vertices rest cleanly without micro-jittering
+                    const speedSq = die.body.velocity.lengthSquared();
+                    const angSpeedSq = die.body.angularVelocity.lengthSquared();
+                    if (gravityChangeRate < 0.004 && speedSq < 1.2 && angSpeedSq < 4.0 && die.body.position.y < 1.35) {
+                        die.body.angularVelocity.scale(0.82, die.body.angularVelocity);
+                        die.body.velocity.scale(0.88, die.body.velocity);
+                    }
+
+                    // Soft wall safety clamp without fighting floor/ceiling resting height
+                    if (die.body.position.x < -maxX) { die.body.position.x = -maxX; if (die.body.velocity.x < 0) die.body.velocity.x *= -0.35; }
+                    if (die.body.position.x > maxX)  { die.body.position.x = maxX;  if (die.body.velocity.x > 0) die.body.velocity.x *= -0.35; }
+                    if (die.body.position.z < -maxZ) { die.body.position.z = -maxZ; if (die.body.velocity.z < 0) die.body.velocity.z *= -0.35; }
+                    if (die.body.position.z > maxZ)  { die.body.position.z = maxZ;  if (die.body.velocity.z > 0) die.body.velocity.z *= -0.35; }
+
+                    // Only catch extreme out-of-bounds tunnel escapes (never push resting D4 upward!)
+                    if (die.body.position.y < -0.5) {
+                        die.body.position.y = 0.5;
+                        die.body.velocity.y = 0;
+                    } else if (die.body.position.y > BOX_HEIGHT + 0.5) {
+                        die.body.position.y = BOX_HEIGHT - 0.5;
+                        if (die.body.velocity.y > 0) die.body.velocity.y = 0;
+                    }
+                }
+
+                die.mesh.position.copy(die.body.position);
+                die.mesh.quaternion.copy(die.body.quaternion);
+            }
+
+            hudRefreshCounter++;
+            if (hudRefreshCounter % 6 === 0) {
+                updateHUDReadout();
+            }
+
+            renderSwipeTrail();
+            renderer.render(scene, camera);
+        }
+
+        window.onload = function () {
+            resetToDefault5D6();
+            setTimeout(() => {
+                applyRollToUnlockedDice(0.4, -0.3, 0.85);
+            }, 150);
+            animate();
+        };
+    </script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+        }
+    </script>
+</body>
+</html>

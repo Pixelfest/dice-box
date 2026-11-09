@@ -1,0 +1,24 @@
+# Dice box: static files on nginx:alpine-slim. TLS is left to the front nginx, which proxies to
+# http://<docker-host>:8099 (or http://dice-box:80 when both share a Docker network).
+services:
+  dice-box:
+    container_name: dice-box
+    image: dice-box
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8099:80"
+    # Nothing in the container needs to change at runtime; nginx only writes its pid and temp files.
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx
+      - /run
+    mem_limit: 32m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 1m
+      timeout: 5s
+      retries: 3
