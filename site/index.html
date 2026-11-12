@@ -179,6 +179,12 @@
                         <i class="fa-solid fa-compass"></i>
                         <span class="hidden sm:inline">Tilt</span>
                     </button>
+
+                    <!-- Settings Popup Trigger -->
+                    <button id="open-settings-menu-btn" title="Settings" class="bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 px-2.5 py-1.5 rounded-xl border border-white/10 flex items-center gap-1.5 text-xs font-semibold transition">
+                        <i class="fa-solid fa-sliders"></i>
+                        <span class="hidden sm:inline">Settings</span>
+                    </button>
                 </div>
             </div>
 
@@ -274,6 +280,50 @@
                     <button id="sound-btn" class="bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-200 py-2 px-3 rounded-xl border border-white/10 flex items-center gap-1.5 text-xs font-semibold transition">
                         <i id="sound-icon" class="fa-solid fa-volume-high text-emerald-400"></i>
                         <span>Sound</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- POPUP 3: Settings (physics feel), remembered per device -->
+            <div id="settings-menu-popup" class="popup-panel hidden-popup interactive-ui absolute top-14 bg-slate-950/95 backdrop-blur-xl border border-white/20 rounded-2xl p-3.5 shadow-2xl w-[92vw] max-w-sm z-30">
+                <div class="flex items-center justify-between pb-2 mb-2.5 border-b border-white/10">
+                    <div class="flex items-center gap-2">
+                        <i class="fa-solid fa-sliders text-sky-400"></i>
+                        <span class="text-xs font-extrabold uppercase tracking-wider text-white">Settings</span>
+                    </div>
+                    <button id="close-settings-menu-btn" class="text-slate-400 hover:text-white w-6 h-6 rounded-lg flex items-center justify-center">
+                        <i class="fa-solid fa-xmark"></i>
+                    </button>
+                </div>
+
+                <div class="grid grid-cols-1 gap-1.5 mb-3">
+                    <label class="block bg-slate-900/90 border border-white/10 rounded-xl px-3 py-2">
+                        <span class="flex items-center justify-between text-xs">
+                            <span class="font-bold text-slate-200">Floor friction</span>
+                            <span id="floor-friction-value" class="mono-num text-amber-300">0.55</span>
+                        </span>
+                        <input id="floor-friction-slider" type="range" min="0.05" max="1.2" step="0.05" class="w-full mt-1.5 accent-amber-400">
+                        <span class="flex justify-between text-[9px] text-slate-500 leading-none">
+                            <span>Slides further</span><span>Stops sooner</span>
+                        </span>
+                    </label>
+
+                    <label class="block bg-slate-900/90 border border-white/10 rounded-xl px-3 py-2">
+                        <span class="flex items-center justify-between text-xs">
+                            <span class="font-bold text-slate-200">Dice friction</span>
+                            <span id="dice-friction-value" class="mono-num text-amber-300">0.25</span>
+                        </span>
+                        <input id="dice-friction-slider" type="range" min="0.05" max="1.0" step="0.05" class="w-full mt-1.5 accent-amber-400">
+                        <span class="flex justify-between text-[9px] text-slate-500 leading-none">
+                            <span>Dice glance off</span><span>Dice catch on each other</span>
+                        </span>
+                    </label>
+                </div>
+
+                <div class="flex items-center justify-end pt-2 border-t border-white/10">
+                    <button id="reset-settings-btn" class="bg-slate-800 hover:bg-slate-700 active:scale-95 text-slate-300 text-xs font-semibold py-2 px-3 rounded-xl border border-white/10 flex items-center gap-1.5 transition">
+                        <i class="fa-solid fa-rotate-left"></i>
+                        <span>Reset to defaults</span>
                     </button>
                 </div>
             </div>
@@ -1244,24 +1294,28 @@
         const glassPhysMat = new CANNON.Material('glassMat');
 
         // Low bounce + tuned contact equation relaxation stops D4 vertices from popping or jittering
-        world.addContactMaterial(new CANNON.ContactMaterial(dicePhysMat, floorPhysMat, {
+        // Dice↔floor and dice↔dice friction are adjustable in the Settings panel; cannon-es reads a contact
+        // material's friction every step, so changing it takes effect immediately.
+        const diceFloorContact = new CANNON.ContactMaterial(dicePhysMat, floorPhysMat, {
             friction: 0.55,
             restitution: 0.2,
             contactEquationStiffness: 1e7,
             contactEquationRelaxation: 4
-        }));
+        });
+        world.addContactMaterial(diceFloorContact);
         world.addContactMaterial(new CANNON.ContactMaterial(dicePhysMat, wallPhysMat, {
             friction: 0.2,
             restitution: 0.38,
             contactEquationStiffness: 1e7,
             contactEquationRelaxation: 4
         }));
-        world.addContactMaterial(new CANNON.ContactMaterial(dicePhysMat, dicePhysMat, {
+        const diceDiceContact = new CANNON.ContactMaterial(dicePhysMat, dicePhysMat, {
             friction: 0.25,
             restitution: 0.32,
             contactEquationStiffness: 1e7,
             contactEquationRelaxation: 4
-        }));
+        });
+        world.addContactMaterial(diceDiceContact);
         world.addContactMaterial(new CANNON.ContactMaterial(dicePhysMat, glassPhysMat, {
             friction: 0.12,
             restitution: 0.25,
@@ -1674,9 +1728,12 @@
         const diceMenuPopup = document.getElementById('dice-menu-popup');
         const tiltMenuPopup = document.getElementById('tilt-menu-popup');
 
+        const settingsMenuPopup = document.getElementById('settings-menu-popup');
+
         function closeAllPopups() {
             diceMenuPopup.classList.add('hidden-popup');
             tiltMenuPopup.classList.add('hidden-popup');
+            settingsMenuPopup.classList.add('hidden-popup');
         }
 
         function isEventOnUI(e) {
@@ -2120,6 +2177,81 @@
         closeTiltMenuBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             tiltMenuPopup.classList.add('hidden-popup');
+        });
+
+        document.getElementById('open-settings-menu-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            soundFX.init();
+            const isHidden = settingsMenuPopup.classList.contains('hidden-popup');
+            closeAllPopups();
+            if (isHidden) settingsMenuPopup.classList.remove('hidden-popup');
+        });
+        document.getElementById('close-settings-menu-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            settingsMenuPopup.classList.add('hidden-popup');
+        });
+
+        /**
+         * Settings panel. Each entry ties a slider to a physics value. Values are remembered per device in
+         * localStorage; that can be unavailable (private mode, blocked storage), so the panel still works
+         * without it and just starts from the defaults.
+         */
+        const SETTINGS_STORAGE_KEY = 'dice-box-settings';
+        const SETTINGS = {
+            floorFriction: {
+                defaultValue: 0.55,
+                slider: document.getElementById('floor-friction-slider'),
+                label: document.getElementById('floor-friction-value'),
+                apply: (v) => { diceFloorContact.friction = v; }
+            },
+            diceFriction: {
+                defaultValue: 0.25,
+                slider: document.getElementById('dice-friction-slider'),
+                label: document.getElementById('dice-friction-value'),
+                apply: (v) => { diceDiceContact.friction = v; }
+            }
+        };
+
+        function loadStoredSettings() {
+            try {
+                return JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY)) || {};
+            } catch {
+                return {};
+            }
+        }
+
+        function saveSettings() {
+            const values = {};
+            Object.entries(SETTINGS).forEach(([key, s]) => { values[key] = Number(s.slider.value); });
+            try {
+                localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(values));
+            } catch {
+                // Storage unavailable: the setting still applies for this session.
+            }
+        }
+
+        function setSetting(key, value) {
+            const s = SETTINGS[key];
+            const min = Number(s.slider.min);
+            const max = Number(s.slider.max);
+            const v = Number.isFinite(value) ? Math.min(max, Math.max(min, value)) : s.defaultValue;
+            s.slider.value = v;
+            s.label.textContent = v.toFixed(2);
+            s.apply(v);
+        }
+
+        const storedSettings = loadStoredSettings();
+        Object.entries(SETTINGS).forEach(([key, s]) => {
+            setSetting(key, key in storedSettings ? Number(storedSettings[key]) : s.defaultValue);
+            s.slider.addEventListener('input', () => {
+                setSetting(key, Number(s.slider.value));
+                saveSettings();
+            });
+        });
+
+        document.getElementById('reset-settings-btn').addEventListener('click', () => {
+            Object.entries(SETTINGS).forEach(([key, s]) => setSetting(key, s.defaultValue));
+            saveSettings();
         });
 
         // Build clean rows inside Dice Tray Manager Popup for D4, D6, D8, D12, D20
