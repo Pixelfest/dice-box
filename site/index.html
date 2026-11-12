@@ -737,16 +737,183 @@
         }
 
         /**
+         * Builds a bevelled render geometry for a convex polyhedron centred near the origin.
+         *
+         * Every face keeps its own plane but is shrunk inward by `bevel`, so a die still rests flat on
+         * its faces while its edges and corners are cut off. Each edge becomes a chamfer strip and each
+         * corner a small cap. Strip and cap vertices take the normal of the face they touch (with a blended
+         * normal along the strip's centre line), so the chamfers shade like rounded edges. Each half of a
+         * strip, and each sector of a cap, belongs to the neighbouring face: it uses that face's material and
+         * continues its UV projection, so face textures run onto the bevel without a seam.
+         *
+         * The geometry stays inside the sharp physics hull, so collisions are unchanged.
+         *
+         * @param {THREE.Vector3[]} verts  Unique corner positions.
+         * @param {{idx: number[], normal: THREE.Vector3, uvOf: (p: THREE.Vector3) => number[]}[]} faces
+         *        Vertex indices counter-clockwise around the outward normal; material index = face index.
+         * @param {number} bevel  Distance the face borders move inward, in world units.
+         */
+        function buildBevelledGeometry(verts, faces, bevel) {
+            const buckets = faces.map(() => ({ pos: [], nrm: [], uv: [] }));
+            const centroid = new THREE.Vector3();
+            verts.forEach(v => centroid.add(v));
+            centroid.divideScalar(verts.length);
+
+            const ab = new THREE.Vector3();
+            const ac = new THREE.Vector3();
+            const mid = new THREE.Vector3();
+            const pushTri = (faceIdx, pts, nrms) => {
+                ab.subVectors(pts[1], pts[0]);
+                ac.subVectors(pts[2], pts[0]);
+                const geomN = ab.cross(ac);
+                if (geomN.lengthSq() < 1e-12) return;
+                mid.copy(pts[0]).add(pts[1]).add(pts[2]).divideScalar(3).sub(centroid);
+                const order = geomN.dot(mid) < 0 ? [0, 2, 1] : [0, 1, 2];
+                const b = buckets[faceIdx];
+                order.forEach(k => {
+                    b.pos.push(pts[k].x, pts[k].y, pts[k].z);
+                    b.nrm.push(nrms[k].x, nrms[k].y, nrms[k].z);
+                    b.uv.push(...faces[faceIdx].uvOf(pts[k]));
+                });
+            };
+
+            // Inset each face corner along its angle bisector so it sits `bevel` away from both edges.
+            const inset = faces.map(face => {
+                const m = new Map();
+                const L = face.idx.length;
+                face.idx.forEach((vi, k) => {
+                    const V = verts[vi];
+                    const dp = verts[face.idx[(k + L - 1) % L]].clone().sub(V).normalize();
+                    const dn = verts[face.idx[(k + 1) % L]].clone().sub(V).normalize();
+                    const bis = dp.clone().add(dn).normalize();
+                    const sinHalf = Math.sqrt((1 - dp.dot(dn)) / 2);
+                    m.set(vi, V.clone().addScaledVector(bis, bevel / sinHalf));
+                });
+                return m;
+            });
+
+            // Flat face polygons (convex, so a fan works).
+            faces.forEach((face, f) => {
+                const pts = face.idx.map(vi => inset[f].get(vi));
+                const n = face.normal;
+                for (let k = 1; k < pts.length - 1; k++) pushTri(f, [pts[0], pts[k], pts[k + 1]], [n, n, n]);
+            });
+
+            // Corner caps meet at the average of the inset corners around each vertex.
+            const caps = verts.map(() => ({ pos: new THREE.Vector3(), nrm: new THREE.Vector3(), count: 0 }));
+            faces.forEach((face, f) => {
+                face.idx.forEach(vi => {
+                    caps[vi].pos.add(inset[f].get(vi));
+                    caps[vi].nrm.add(face.normal);
+                    caps[vi].count++;
+                });
+            });
+            caps.forEach(c => {
+                if (c.count) c.pos.divideScalar(c.count);
+                c.nrm.normalize();
+            });
+
+            // Each edge is shared by two faces: build its chamfer strip and its share of both corner caps.
+            const edges = new Map();
+            faces.forEach((face, f) => {
+                const L = face.idx.length;
+                face.idx.forEach((a, k) => {
+                    const b = face.idx[(k + 1) % L];
+                    const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+                    if (!edges.has(key)) edges.set(key, { a, b, faces: [] });
+                    edges.get(key).faces.push(f);
+                });
+            });
+            edges.forEach(({ a, b, faces: pair }) => {
+                if (pair.length !== 2) return;
+                const [A, B] = pair;
+                const nA = faces[A].normal;
+                const nB = faces[B].normal;
+                const nM = nA.clone().add(nB).normalize();
+                const PA = { a: inset[A].get(a), b: inset[A].get(b) };
+                const PB = { a: inset[B].get(a), b: inset[B].get(b) };
+                const M = {
+                    a: PA.a.clone().add(PB.a).multiplyScalar(0.5),
+                    b: PA.b.clone().add(PB.b).multiplyScalar(0.5)
+                };
+
+                pushTri(A, [PA.a, PA.b, M.b], [nA, nA, nM]);
+                pushTri(A, [PA.a, M.b, M.a], [nA, nM, nM]);
+                pushTri(B, [PB.a, PB.b, M.b], [nB, nB, nM]);
+                pushTri(B, [PB.a, M.b, M.a], [nB, nM, nM]);
+
+                [a, b].forEach(vi => {
+                    const key = vi === a ? 'a' : 'b';
+                    const cap = caps[vi];
+                    pushTri(A, [cap.pos, PA[key], M[key]], [cap.nrm, nA, nM]);
+                    pushTri(B, [cap.pos, M[key], PB[key]], [cap.nrm, nM, nB]);
+                });
+            });
+
+            const pos = [];
+            const nrm = [];
+            const uv = [];
+            const geo = new THREE.BufferGeometry();
+            let offset = 0;
+            buckets.forEach((b, f) => {
+                pos.push(...b.pos);
+                nrm.push(...b.nrm);
+                uv.push(...b.uv);
+                const count = b.pos.length / 3;
+                geo.addGroup(offset, count, f);
+                offset += count;
+            });
+            geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+            geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+            geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+            geo.computeBoundingSphere();
+            return geo;
+        }
+
+        // Bevel size as a fraction of each die's radius: enough to catch the light, small enough to keep faces readable.
+        const BEVEL_FRACTION = 0.055;
+
+        /**
          * Builds a Three.js BufferGeometry (with per-face material groups and clean planar UVs)
          * and a matching Cannon-es ConvexPolyhedron shape from any convex Three.js geometry.
          */
         function buildPolyhedralAsset(typeKey) {
             const cfg = DICE_TYPES[typeKey];
 
-            // Special handling for D6 BoxGeometry
+            // D6: a cube with square-mapped pip textures and a box physics shape
             if (typeKey === 'D6') {
                 const s = cfg.size;
-                const geo = new THREE.BoxGeometry(s, s, s);
+                const h = s / 2;
+                const cubeVerts = [];
+                const cubeVertIndex = (p) => {
+                    const i = cubeVerts.findIndex(v => v.distanceTo(p) < 1e-6);
+                    if (i !== -1) return i;
+                    cubeVerts.push(p.clone());
+                    return cubeVerts.length - 1;
+                };
+                // Same face order as BoxGeometry (+x, -x, +y, -y, +z, -z), which faceValues below rely on.
+                const cubeFaceAxes = [
+                    [new THREE.Vector3(1, 0, 0), new THREE.Vector3(0, 0, -1)],
+                    [new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, 0, 1)],
+                    [new THREE.Vector3(0, 1, 0), new THREE.Vector3(1, 0, 0)],
+                    [new THREE.Vector3(0, -1, 0), new THREE.Vector3(1, 0, 0)],
+                    [new THREE.Vector3(0, 0, 1), new THREE.Vector3(1, 0, 0)],
+                    [new THREE.Vector3(0, 0, -1), new THREE.Vector3(-1, 0, 0)]
+                ];
+                const cubeFaces = cubeFaceAxes.map(([n, u]) => {
+                    const v = new THREE.Vector3().crossVectors(n, u);
+                    const c = n.clone().multiplyScalar(h);
+                    const corner = (su, sv) => c.clone().addScaledVector(u, su * h).addScaledVector(v, sv * h);
+                    return {
+                        idx: [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)].map(cubeVertIndex),
+                        normal: n,
+                        uvOf: (p) => {
+                            const rel = p.clone().sub(c);
+                            return [0.5 + rel.dot(u) / s, 0.5 + rel.dot(v) / s];
+                        }
+                    };
+                });
+                const geo = buildBevelledGeometry(cubeVerts, cubeFaces, cfg.radius * BEVEL_FRACTION);
                 const half = new CANNON.Vec3(s / 2, s / 2, s / 2);
                 const shape = new CANNON.Box(half);
 
@@ -870,9 +1037,7 @@
             }
 
             // 4. Construct final BufferGeometry with planar UVs and strictly outward counter-clockwise Cannon faces
-            const outPositions = [];
-            const outNormals = [];
-            const outUVs = [];
+            const renderFaces = [];
             const cannonFaces = [];
             const faceNormals = [];
             const normalMats = [];
@@ -921,20 +1086,17 @@
                 }
                 cannonFaces.push(sortedCannonIndices);
 
-                // Push triangles & compute planar UVs
-                cluster.tris.forEach(([p0, p1, p2]) => {
-                    [p0, p1, p2].forEach(p => {
-                        outPositions.push(p.x, p.y, p.z);
-                        outNormals.push(n.x, n.y, n.z);
-
+                // Planar UVs: the face's corners land on a circle of radius uvScaleRadius in texture space
+                renderFaces.push({
+                    idx: sortedCannonIndices,
+                    normal: n,
+                    uvOf: (p) => {
                         const rel = p.clone().sub(center);
-                        const xProj = rel.dot(uAxis) / maxR;
-                        const yProj = rel.dot(vAxis) / maxR;
-
-                        const u = 0.5 + xProj * uvScaleRadius;
-                        const v = 0.5 + yProj * uvScaleRadius;
-                        outUVs.push(u, v);
-                    });
+                        return [
+                            0.5 + (rel.dot(uAxis) / maxR) * uvScaleRadius,
+                            0.5 + (rel.dot(vAxis) / maxR) * uvScaleRadius
+                        ];
+                    }
                 });
 
                 // Create face materials
@@ -985,16 +1147,7 @@
                 }));
             });
 
-            const finalGeo = new THREE.BufferGeometry();
-            finalGeo.setAttribute('position', new THREE.Float32BufferAttribute(outPositions, 3));
-            finalGeo.setAttribute('normal', new THREE.Float32BufferAttribute(outNormals, 3));
-            finalGeo.setAttribute('uv', new THREE.Float32BufferAttribute(outUVs, 2));
-            let groupOffset = 0;
-            faceClusters.forEach((c, idx) => {
-                const count = c.tris.length * 3;
-                finalGeo.addGroup(groupOffset, count, idx);
-                groupOffset += count;
-            });
+            const finalGeo = buildBevelledGeometry(uniqueVerts, renderFaces, cfg.radius * BEVEL_FRACTION);
 
             const cannonVerts = uniqueVerts.map(v => new CANNON.Vec3(v.x, v.y, v.z));
             const shape = new CANNON.ConvexPolyhedron({
@@ -1248,8 +1401,9 @@
                 linearDamping: 0.18,
                 angularDamping: typeKey === 'D4' ? 0.32 : 0.22,
                 allowSleep: true,
-                sleepSpeedLimit: 0.28,
-                sleepTimeLimit: 0.35
+                // Low enough that a die slowly tipping off an edge is not put to sleep mid-fall
+                sleepSpeedLimit: 0.12,
+                sleepTimeLimit: 0.5
             });
             body.addShape(asset.shape);
 
@@ -1298,7 +1452,9 @@
                 locked: false,
                 lockedPosition: new CANNON.Vec3(),
                 lockedQuaternion: new CANNON.Quaternion(),
-                value: 1
+                value: 1,
+                cockedTime: 0,
+                rescues: 0
             };
 
             mesh.userData.dieRef = dieObj;
@@ -1461,6 +1617,8 @@
 
             unlocked.forEach((die) => {
                 die.body.wakeUp();
+                die.cockedTime = 0;
+                die.rescues = 0;
 
                 const jitterX = (Math.random() - 0.5) * 14;
                 const jitterZ = (Math.random() - 0.5) * 14;
@@ -2119,6 +2277,41 @@
         let lastFrameTime = performance.now();
         let hudRefreshCounter = 0;
 
+        /**************************************************************
+         * SETTLING: keep dice from coming to rest on an edge or corner
+         **************************************************************/
+        // A die counts as flat when one face normal is within this angle of the gravity direction.
+        const FLAT_COS = Math.cos(THREE.MathUtils.degToRad(4));
+        // Resting tilted more than this for COCKED_RESCUE_DELAY seconds counts as cocked.
+        const COCKED_COS = Math.cos(THREE.MathUtils.degToRad(7));
+        const COCKED_RESCUE_DELAY = 0.8;
+        // Hops per die per roll, so a die wedged for good eventually stays put instead of hopping forever.
+        const MAX_RESCUES = 3;
+        // Angular acceleration (rad/s² per radian of tilt) that tips a slow, tilted die onto its nearest face.
+        const SETTLE_GAIN = 16;
+
+        const gravityDir = new THREE.Vector3(0, -1, 0);
+        const restNormal = new THREE.Vector3();
+        const settleAxis = new THREE.Vector3();
+
+        /**
+         * Finds the face that is closest to resting flat (its outward normal most aligned with gravity).
+         * Writes that face's world-space normal to `restNormal` and returns the cosine of its tilt.
+         */
+        function restingFaceAlignment(die) {
+            let bestDot = -Infinity;
+            const normals = die.asset.faceNormals;
+            for (let i = 0; i < normals.length; i++) {
+                tempVec.copy(normals[i]).applyQuaternion(die.body.quaternion);
+                const d = tempVec.dot(gravityDir);
+                if (d > bestDot) {
+                    bestDot = d;
+                    restNormal.copy(tempVec);
+                }
+            }
+            return bestDot;
+        }
+
         function animate(now = performance.now()) {
             requestAnimationFrame(animate);
 
@@ -2163,6 +2356,17 @@
             // High-frequency 120Hz fixed physics substeps for rock-solid polyhedral settling
             world.step(1 / 120, dt, 10);
 
+            const gravityLen = world.gravity.length();
+            if (gravityLen > 1) {
+                gravityDir.set(world.gravity.x, world.gravity.y, world.gravity.z).divideScalar(gravityLen);
+            }
+            // Bodies touching something after the last substep (sleeping dice have no contacts)
+            const touchingBodies = new Set();
+            for (const c of world.contacts) {
+                touchingBodies.add(c.bi);
+                touchingBodies.add(c.bj);
+            }
+
             const pulseScale = 1 + Math.sin(now * 0.008) * 0.08;
 
             for (let i = 0; i < diceList.length; i++) {
@@ -2184,12 +2388,73 @@
                         1
                     );
                 } else {
-                    // Extra low-speed settling damping so sharp D4/D8 vertices rest cleanly without micro-jittering
-                    const speedSq = die.body.velocity.lengthSquared();
-                    const angSpeedSq = die.body.angularVelocity.lengthSquared();
-                    if (gravityChangeRate < 0.004 && speedSq < 1.2 && angSpeedSq < 4.0 && die.body.position.y < 1.35) {
-                        die.body.angularVelocity.scale(0.82, die.body.angularVelocity);
-                        die.body.velocity.scale(0.88, die.body.velocity);
+                    const body = die.body;
+                    const speedSq = body.velocity.lengthSquared();
+                    const angSpeedSq = body.angularVelocity.lengthSquared();
+                    const slow = speedSq < 1.2 && angSpeedSq < 4.0;
+                    const touching = touchingBodies.has(body);
+                    const restCos = restingFaceAlignment(die);
+
+                    // Tilting the phone is a fresh "roll" too (button/swipe rolls reset this in applyRollToUnlockedDice)
+                    if (gravityChangeRate > 0.02) die.rescues = 0;
+
+                    if (slow && touching && restCos > FLAT_COS) {
+                        // Already flat: extra damping so sharp D4/D8 vertices rest cleanly without micro-jitter.
+                        // Only applied once flat, so it can no longer freeze a die that is still tipping over.
+                        if (gravityChangeRate < 0.004) {
+                            body.angularVelocity.scale(0.82, body.angularVelocity);
+                            body.velocity.scale(0.88, body.velocity);
+                        }
+                    } else if (slow && touching && die.rescues < MAX_RESCUES) {
+                        // Slow but tilted: rotate the nearest face toward gravity so the die tips onto it
+                        // instead of balancing on an edge. Axis n × g turns n toward g.
+                        // Once the rescue hops are used up the die is wedged for good: stop pushing so it can sleep.
+                        const tilt = Math.acos(THREE.MathUtils.clamp(restCos, -1, 1));
+                        settleAxis.crossVectors(restNormal, gravityDir);
+                        if (settleAxis.lengthSq() > 1e-8) {
+                            settleAxis.normalize().multiplyScalar(SETTLE_GAIN * tilt * dt);
+                            body.angularVelocity.x += settleAxis.x;
+                            body.angularVelocity.y += settleAxis.y;
+                            body.angularVelocity.z += settleAxis.z;
+                        }
+                    }
+
+                    // Cocked-die rescue: still tilted after coming to rest (propped on a die or wall) → small hop
+                    if (slow && restCos < COCKED_COS) {
+                        die.cockedTime += dt;
+                    } else {
+                        die.cockedTime = 0;
+                    }
+                    if (die.cockedTime > COCKED_RESCUE_DELAY && die.rescues < MAX_RESCUES) {
+                        die.cockedTime = 0;
+                        die.rescues++;
+                        body.wakeUp();
+                        // Hop away from the nearest die (usually the one it is propped on), into open space
+                        let awayX = Math.random() - 0.5;
+                        let awayZ = Math.random() - 0.5;
+                        let nearestSq = Infinity;
+                        for (const other of diceList) {
+                            if (other === die) continue;
+                            const dx = body.position.x - other.body.position.x;
+                            const dz = body.position.z - other.body.position.z;
+                            const distSq = dx * dx + dz * dz;
+                            if (distSq < nearestSq) {
+                                nearestSq = distSq;
+                                awayX = dx;
+                                awayZ = dz;
+                            }
+                        }
+                        const awayLen = Math.hypot(awayX, awayZ) || 1;
+                        body.velocity.set(
+                            -gravityDir.x * 5 + (awayX / awayLen) * 3 + (Math.random() - 0.5) * 2,
+                            -gravityDir.y * 5,
+                            -gravityDir.z * 5 + (awayZ / awayLen) * 3 + (Math.random() - 0.5) * 2
+                        );
+                        body.angularVelocity.set(
+                            (Math.random() - 0.5) * 10,
+                            (Math.random() - 0.5) * 10,
+                            (Math.random() - 0.5) * 10
+                        );
                     }
 
                     // Soft wall safety clamp without fighting floor/ceiling resting height
