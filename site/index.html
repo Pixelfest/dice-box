@@ -873,6 +873,11 @@
         // Bevel size as a fraction of each die's radius: enough to catch the light, small enough to keep faces readable.
         const BEVEL_FRACTION = 0.055;
 
+        // Strength of the dice's mirror highlight (MeshPhysicalMaterial default is 1). The main light sits
+        // almost straight above, so at full strength its reflection on flat tops near the lower right of the
+        // tray washes out the pips. Lowering it keeps the light, shadows and a soft sheen unchanged.
+        const DICE_SPECULAR = 0.35;
+
         /**
          * Builds a Three.js BufferGeometry (with per-face material groups and clean planar UVs)
          * and a matching Cannon-es ConvexPolyhedron shape from any convex Three.js geometry.
@@ -931,11 +936,17 @@
                 const lockedMats = [];
                 faceValues.forEach(val => {
                     const texPair = createD6PipTextures(val, cfg.palette);
-                    normalMats.push(new THREE.MeshStandardMaterial({ map: texPair.normal, roughness: 0.22, metalness: 0.05 }));
-                    lockedMats.push(new THREE.MeshStandardMaterial({
+                    normalMats.push(new THREE.MeshPhysicalMaterial({
+                        map: texPair.normal,
+                        roughness: 0.32,
+                        metalness: 0.05,
+                        specularIntensity: DICE_SPECULAR
+                    }));
+                    lockedMats.push(new THREE.MeshPhysicalMaterial({
                         map: texPair.locked,
-                        roughness: 0.18,
+                        roughness: 0.32,
                         metalness: 0.1,
+                        specularIntensity: DICE_SPECULAR,
                         emissive: new THREE.Color(0xdc2626),
                         emissiveIntensity: 0.55
                     }));
@@ -1133,15 +1144,17 @@
                     texPair = createPolygonNumberTextures(faceValues[faceIdx], polySides, cfg.palette, fontScale);
                 }
 
-                normalMats.push(new THREE.MeshStandardMaterial({
+                normalMats.push(new THREE.MeshPhysicalMaterial({
                     map: texPair.normal,
-                    roughness: 0.24,
-                    metalness: 0.08
+                    roughness: 0.32,
+                    metalness: 0.08,
+                    specularIntensity: DICE_SPECULAR
                 }));
-                lockedMats.push(new THREE.MeshStandardMaterial({
+                lockedMats.push(new THREE.MeshPhysicalMaterial({
                     map: texPair.locked,
-                    roughness: 0.18,
+                    roughness: 0.32,
                     metalness: 0.12,
+                    specularIntensity: DICE_SPECULAR,
                     emissive: new THREE.Color(0xdc2626),
                     emissiveIntensity: 0.55
                 }));
